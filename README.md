@@ -2,6 +2,8 @@
 
 A real-time adaptive Neural Network filter plugin for OpenTabletDriver that learns your movement patterns to provide smooth, low-latency cursor prediction.
 
+**Note:** This project was vibe coded using AI assistance. The entire codebase, from the neural network implementation to the real-time web visualization, was developed through AI programming.
+
 ## Features
 
 - **Neural Network Prediction**: Learns your movement patterns in real-time using a Multi-Layer Perceptron
