@@ -1,0 +1,39 @@
+## .NET Build outputs
+bin/
+obj/
+*.dll
+*.exe
+*.pdb
+
+## Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+*.userprefs
+*.swp
+
+## Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+
+## Test results
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+
+## NuGet
+*.nupkg
+*.snupkg
+.nuget/
+packages/
+
+## OS files
+.DS_Store
+Thumbs.db
+
+## wwwroot (if generated)
+wwwroot/
