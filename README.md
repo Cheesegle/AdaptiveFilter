@@ -22,7 +22,7 @@ A real-time adaptive Neural Network filter plugin for OpenTabletDriver that lear
 
 2. **Install Plugin**:
    - Open OpenTabletDriver
-   - Go to `Tools` → `Open Plugin Directory`
+   - Open Plugin Directory
    - Copy `AdaptiveFilter.dll` to this directory
    - Restart OpenTabletDriver
 
