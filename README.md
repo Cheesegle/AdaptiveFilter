@@ -36,21 +36,7 @@ A real-time adaptive Neural Network filter plugin for OpenTabletDriver that lear
 ### Basic Settings
 - **Target Rate**: Output refresh rate in Hz (default: 1000)
 - **Prediction Offset**: Time offset for predictions in ms (default: 0)
-- **Lookahead**: Prediction multiplier (default: 1.0)
-
-### Neural Network
-- **Learning Rate**: How fast the model adapts
-- **Hidden Layer Size**: Neurons per hidden layer 
-- **Hidden Layer Count**: Number of hidden layers 
-- **Samples**: Number of past points to use
-
-### Filters
-- **Anti-Chatter Strength**: Noise suppression threshold in mm (default: 1.0)
-- **Use Hybrid Mode**: 
-  - ❌ Pure NN prediction (smoothest)
-  - ✅ Real input + NN upsampling (lowest latency)
-
-### Visualization
+- **Lookahead**: Multiplier for the prediction vector (default: 1.0)
 - **Web UI Port**: Port for web interface (default: 5000)
 
 ## Web UI

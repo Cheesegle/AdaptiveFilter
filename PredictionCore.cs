@@ -48,6 +48,41 @@ namespace AdaptiveFilter
             }
         }
 
+        private bool _useAbsolutePosition = false;
+        public bool UseAbsolutePosition
+        {
+            get => _useAbsolutePosition;
+            set
+            {
+                if (_useAbsolutePosition != value)
+                {
+                    _useAbsolutePosition = value;
+                    RebuildNetwork();
+                }
+            }
+        }
+
+        private bool _useTimeDelta = false;
+        public bool UseTimeDelta
+        {
+            get => _useTimeDelta;
+            set
+            {
+                if (_useTimeDelta != value)
+                {
+                    _useTimeDelta = value;
+                    RebuildNetwork();
+                }
+            }
+        }
+
+        private bool _useInterpolatedTraining = false;
+        public bool UseInterpolatedTraining
+        {
+            get => _useInterpolatedTraining;
+            set => _useInterpolatedTraining = value;
+        }
+
         public PredictionCore(int capacity = 5)
         {
             _capacity = capacity;
@@ -61,10 +96,16 @@ namespace AdaptiveFilter
 
         private void RebuildNetwork()
         {
-            // Input: 10, Output: 2
-            // Hidden layers: [size, size, ...] (count times)
+            // Calculate input size based on features
+            // Base: 5 deltas × 2 (X,Y) = 10
+            // + Absolute positions: 5 positions × 2 (X,Y) = 10
+            // + Time deltas: 5 time differences = 5
+            int inputSize = 10; // Base deltas
+            if (_useAbsolutePosition) inputSize += 10; // Absolute X,Y positions
+            if (_useTimeDelta) inputSize += 5; // Time differences
+
             int[] layers = new int[_hiddenCount + 2];
-            layers[0] = 10;
+            layers[0] = inputSize;
             for(int i=0; i<_hiddenCount; i++)
             {
                 layers[i+1] = _hiddenSize;
@@ -72,6 +113,7 @@ namespace AdaptiveFilter
             layers[layers.Length - 1] = 2;
             
             _nn = new NeuralNetwork(layers);
+            TrainingIterations = 0; // Reset training count when network changes
         }
 
         public void Add(Vector2 point, double time)
@@ -103,13 +145,130 @@ namespace AdaptiveFilter
             if (deltas.Count < 6) return;
             
             var trainingDeltas = deltas.Skip(deltas.Count - 6).ToArray();
+            var trainingPoints = points.Skip(points.Length - 6).ToArray();
             
-            double[] nnInputs = new double[10];
+            // Train on actual data
+            TrainOnSequence(trainingDeltas, trainingPoints);
+            
+            // Optionally train on interpolated data for the last 1-2 inputs
+            if (_useInterpolatedTraining && trainingPoints.Length >= 3)
+            {
+                // Interpolate between last 2 inputs (indices 4 and 5)
+                var interpolated1 = InterpolateTrainingData(trainingPoints, trainingDeltas, 4, 5);
+                if (interpolated1 != null)
+                {
+                    TrainOnSequence(interpolated1.Value.deltas, interpolated1.Value.points);
+                }
+                
+                // Interpolate between inputs 3 and 4
+                var interpolated2 = InterpolateTrainingData(trainingPoints, trainingDeltas, 3, 4);
+                if (interpolated2 != null)
+                {
+                    TrainOnSequence(interpolated2.Value.deltas, interpolated2.Value.points);
+                }
+            }
+        }
+
+        private (Vector2[] deltas, TimeSeriesPoint[] points)? InterpolateTrainingData(
+            TimeSeriesPoint[] originalPoints, Vector2[] originalDeltas, int idx1, int idx2)
+        {
+            if (idx1 < 0 || idx2 >= originalPoints.Length) return null;
+            
+            var p1 = originalPoints[idx1];
+            var p2 = originalPoints[idx2];
+            
+            // Linear interpolation at midpoint in time
+            double timeDelta = p2.Time - p1.Time;
+            if (timeDelta <= 0) return null;
+            
+            double midTime = p1.Time + (timeDelta / 2.0);
+            float t = 0.5f; // Interpolation factor
+            
+            Vector2 midPoint = Vector2.Lerp(p1.Point, p2.Point, t);
+            var interpolatedPoint = new TimeSeriesPoint(midPoint, midTime);
+            
+            // Build new sequence with interpolated point
+            var newPoints = new TimeSeriesPoint[6];
+            var newDeltas = new Vector2[6];
+            
+            // Copy points before interpolation
+            for (int i = 0; i < idx1; i++)
+            {
+                newPoints[i] = originalPoints[i];
+            }
+            
+            // Insert interpolated point
+            newPoints[idx1] = p1;
+            newPoints[idx1 + 1] = interpolatedPoint;
+            
+            // Shift remaining points
+            int offset = 0;
+            for (int i = idx1 + 2; i < 6; i++)
+            {
+                int srcIdx = idx2 + offset;
+                if (srcIdx < originalPoints.Length)
+                {
+                    newPoints[i] = originalPoints[srcIdx];
+                }
+                else
+                {
+                    // Not enough points for full sequence
+                    return null;
+                }
+                offset++;
+            }
+            
+            // Calculate deltas from new points
+            for (int i = 0; i < 5; i++)
+            {
+                newDeltas[i] = newPoints[i + 1].Point - newPoints[i].Point;
+            }
+            // Target delta is from point 5 to 6 (but we only have 6 points, so use last original delta)
+            if (originalDeltas.Length > idx2)
+            {
+                newDeltas[5] = originalDeltas[idx2];
+            }
+            else
+            {
+                return null;
+            }
+            
+            return (newDeltas, newPoints);
+        }
+
+        private void TrainOnSequence(Vector2[] trainingDeltas, TimeSeriesPoint[] trainingPoints)
+        {
+            // Build input array dynamically
+            List<double> inputList = new List<double>();
+            
+            // Add deltas (base feature)
             for(int i=0; i<5; i++)
             {
-                nnInputs[i*2] = trainingDeltas[i].X / 100.0;
-                nnInputs[i*2+1] = trainingDeltas[i].Y / 100.0;
+                inputList.Add(trainingDeltas[i].X / 100.0);
+                inputList.Add(trainingDeltas[i].Y / 100.0);
             }
+            
+            // Add absolute positions if enabled
+            if (_useAbsolutePosition)
+            {
+                for(int i=0; i<5; i++)
+                {
+                    inputList.Add(trainingPoints[i].Point.X / 1000.0);
+                    inputList.Add(trainingPoints[i].Point.Y / 1000.0);
+                }
+            }
+            
+            // Add time deltas if enabled
+            if (_useTimeDelta)
+            {
+                for(int i=0; i<5; i++)
+                {
+                    double timeDelta = trainingPoints[i+1].Time - trainingPoints[i].Time;
+                    inputList.Add(timeDelta / 10.0);
+                }
+            }
+            
+            double[] nnInputs = inputList.ToArray();
             
             double[] targets = new double[2];
             targets[0] = trainingDeltas[5].X / 100.0;
@@ -137,12 +296,47 @@ namespace AdaptiveFilter
             if (deltas.Count < 5) return lastPoint.Point;
             
             var inputDeltas = deltas.Skip(deltas.Count - 5).ToArray();
-            double[] nnInputs = new double[10];
+            var inputPoints = points.Skip(points.Length - 5).ToArray();
+            
+            // Build input array dynamically
+            List<double> inputList = new List<double>();
+            
+            // Add deltas (base feature)
             for(int i=0; i<5; i++)
             {
-                nnInputs[i*2] = inputDeltas[i].X / 100.0;
-                nnInputs[i*2+1] = inputDeltas[i].Y / 100.0;
+                inputList.Add(inputDeltas[i].X / 100.0);
+                inputList.Add(inputDeltas[i].Y / 100.0);
             }
+            
+            // Add absolute positions if enabled
+            if (_useAbsolutePosition)
+            {
+                for(int i=0; i<5; i++)
+                {
+                    inputList.Add(inputPoints[i].Point.X / 1000.0);
+                    inputList.Add(inputPoints[i].Point.Y / 1000.0);
+                }
+            }
+            
+            // Add time deltas if enabled
+            if (_useTimeDelta)
+            {
+                for(int i=0; i<4; i++)
+                {
+                    double timeDelta = inputPoints[i+1].Time - inputPoints[i].Time;
+                    inputList.Add(timeDelta / 10.0);
+                }
+                // For the 5th time delta, use the average of the previous 4
+                double avgTimeDelta = 0;
+                for(int i=0; i<4; i++)
+                {
+                    avgTimeDelta += (inputPoints[i+1].Time - inputPoints[i].Time);
+                }
+                avgTimeDelta /= 4.0;
+                inputList.Add(avgTimeDelta / 10.0);
+            }
+            
+            double[] nnInputs = inputList.ToArray();
             
             var output = _nn.FeedForward(nnInputs);
             

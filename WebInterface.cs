@@ -188,7 +188,8 @@ namespace AdaptiveFilter
         const iterEl = document.getElementById('iterations');
         let rawPoints = [], predPoints = [];
         const maxPoints = 100;
-        let avgAccuracy = 0;
+        let accuracyBuffer = [];
+        const accuracyWindow = 5000; // 5 seconds in ms
 
         function resizeCanvases() {
             const container = document.getElementById('canvas-container');
@@ -223,9 +224,19 @@ namespace AdaptiveFilter
                     if (rawPoints.length > maxPoints) rawPoints.shift();
                 }
                 
-                if (data.a) {
-                    avgAccuracy = avgAccuracy * 0.9 + data.a * 0.1;
-                    accEl.textContent = avgAccuracy.toFixed(2);
+                if (data.a !== undefined) {
+                    const now = Date.now();
+                    accuracyBuffer.push({ value: data.a, time: now });
+                    
+                    // Remove entries older than 5 seconds
+                    accuracyBuffer = accuracyBuffer.filter(entry => now - entry.time < accuracyWindow);
+                    
+                    // Calculate 5-second average
+                    if (accuracyBuffer.length > 0) {
+                        const sum = accuracyBuffer.reduce((acc, entry) => acc + entry.value, 0);
+                        const avg = sum / accuracyBuffer.length;
+                        accEl.textContent = avg.toFixed(2);
+                    }
                 }
                 
                 if (data.r) {
@@ -341,69 +352,94 @@ namespace AdaptiveFilter
 </html>";
         }
 
+        private readonly ConcurrentDictionary<WebSocket, int> _socketSendingStates = new();
+
         public void BroadcastData(Vector2 pos, double time, bool isPrediction, float accuracy = 0, double[]? weights = null, float rate = 0, int[]? layerSizes = null, int iterations = 0)
         {
             if (_sockets.IsEmpty) return;
 
-            // Manual JSON formatting to avoid allocation overhead
-            // {"x":123.45,"y":678.90,"t":123456.78,"p":true,"a":0.12,"r":1000.0,"w":[...],"ls":[10,16,16,2],"it":12345}
-            StringBuilder sb = new StringBuilder();
-            sb.AppendFormat(System.Globalization.CultureInfo.InvariantCulture, 
-                "{{\"x\":{0:F2},\"y\":{1:F2},\"t\":{2:F2},\"p\":{3},\"a\":{4:F4},\"r\":{5:F1},\"it\":{6}", 
-                pos.X, pos.Y, time, isPrediction ? "true" : "false", accuracy, rate, iterations);
+            // Simple manual JSON formatting
+            var sb = new System.Text.StringBuilder();
+            sb.Append('{');
+            sb.Append($"\"x\":{pos.X:F2},");
+            sb.Append($"\"y\":{pos.Y:F2},");
+            sb.Append($"\"t\":{time:F2},");
+            sb.Append($"\"p\":{(isPrediction ? "true" : "false")},");
+            sb.Append($"\"a\":{accuracy:F3}");
+            
+            if (rate > 0) sb.Append($",\"r\":{rate:F1}");
+            if (iterations > 0) sb.Append($",\"i\":{iterations}");
 
-            if (weights != null)
-            {
-                sb.Append(",\"w\":[");
-                for (int i = 0; i < weights.Length; i++)
-                {
-                    sb.Append(weights[i].ToString("F4", System.Globalization.CultureInfo.InvariantCulture));
-                    if (i < weights.Length - 1) sb.Append(",");
-                }
-                sb.Append("]");
-            }
-
-            if (layerSizes != null)
+            if (weights != null && layerSizes != null)
             {
                 sb.Append(",\"ls\":[");
-                for (int i = 0; i < layerSizes.Length; i++)
+                for(int i=0; i<layerSizes.Length; i++)
                 {
                     sb.Append(layerSizes[i]);
-                    if (i < layerSizes.Length - 1) sb.Append(",");
+                    if (i < layerSizes.Length - 1) sb.Append(',');
                 }
-                sb.Append("]");
+                sb.Append("],\"w\":[");
+                for(int i=0; i<weights.Length; i++)
+                {
+                    sb.Append($"{weights[i]:F3}");
+                    if (i < weights.Length - 1) sb.Append(',');
+                }
+                sb.Append(']');
             }
-
-            sb.Append("}");
-
+            sb.Append('}');
+            
             string json = sb.ToString();
-            var bytes = Encoding.UTF8.GetBytes(json);
-            var segment = new ArraySegment<byte>(bytes);
+            byte[] buffer = System.Text.Encoding.UTF8.GetBytes(json);
+            var segment = new ArraySegment<byte>(buffer);
 
             foreach (var socket in _sockets.Values)
             {
                 if (socket.State == WebSocketState.Open)
                 {
-                    // Fire and forget - don't await result to block the loop
-                    try
+                    // Atomic check-and-set: Try to change state from 0 (free) to 1 (sending)
+                    // If current value is not 0 (i.e., 1), TryUpdate returns false.
+                    // If key doesn't exist, we skip (should be added in ProcessWebSocketRequest)
+                    
+                    // Ensure key exists first (lazy init if needed, though ProcessWebSocketRequest should handle it)
+                    _socketSendingStates.TryAdd(socket, 0);
+
+                    if (_socketSendingStates.TryUpdate(socket, 1, 0))
                     {
-                        socket.SendAsync(segment, WebSocketMessageType.Text, true, CancellationToken.None);
+                        // We successfully acquired the lock (state is now 1)
+                        socket.SendAsync(segment, WebSocketMessageType.Text, true, CancellationToken.None)
+                            .ContinueWith(t => 
+                            {
+                                // Release lock: set state back to 0
+                                _socketSendingStates.TryUpdate(socket, 0, 1);
+                            });
                     }
-                    catch { /* Ignore */ }
                 }
             }
         }
 
         private async Task Echo(WebSocket webSocket)
         {
+            _socketSendingStates.TryAdd(webSocket, 0);
+            
             var buffer = new byte[1024 * 4];
-            while (webSocket.State == WebSocketState.Open)
+            try
             {
-                var result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
-                if (result.MessageType == WebSocketMessageType.Close)
+                while (webSocket.State == WebSocketState.Open)
                 {
-                    await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, string.Empty, CancellationToken.None);
+                    var result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                    if (result.MessageType == WebSocketMessageType.Close)
+                    {
+                        await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, string.Empty, CancellationToken.None);
+                    }
                 }
+            }
+            catch
+            {
+                // Ignore errors
+            }
+            finally
+            {
+                _socketSendingStates.TryRemove(webSocket, out _);
             }
         }
 
