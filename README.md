@@ -39,10 +39,10 @@ A real-time adaptive Neural Network filter plugin for OpenTabletDriver that lear
 - **Lookahead**: Prediction multiplier (default: 1.0)
 
 ### Neural Network
-- **Learning Rate**: How fast the model adapts (default: 0.01)
-- **Hidden Layer Size**: Neurons per hidden layer (default: 16)
-- **Hidden Layer Count**: Number of hidden layers (default: 2)
-- **Samples**: Number of past points to use (default: 5)
+- **Learning Rate**: How fast the model adapts
+- **Hidden Layer Size**: Neurons per hidden layer 
+- **Hidden Layer Count**: Number of hidden layers 
+- **Samples**: Number of past points to use
 
 ### Filters
 - **Anti-Chatter Strength**: Noise suppression threshold in mm (default: 1.0)
