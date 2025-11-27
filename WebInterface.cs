@@ -215,15 +215,23 @@ namespace AdaptiveFilter
             const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                const point = { x: data.x, y: data.y, t: data.t };
-                if (data.p) {
-                    predPoints.push(point);
-                    if (predPoints.length > maxPoints) predPoints.shift();
-                } else {
-                    rawPoints.push(point);
-                    if (rawPoints.length > maxPoints) rawPoints.shift();
+
+                // If the server sent an array of predicted points (pp), use that to render prediction trajectory
+                if (data.pp && Array.isArray(data.pp)) {
+                    predPoints = data.pp.map(p => ({ x: p.x, y: p.y, t: Date.now() }));
+                    if (predPoints.length > maxPoints) predPoints = predPoints.slice(-maxPoints);
                 }
-                
+                else {
+                    const point = { x: data.x, y: data.y, t: data.t };
+                    if (data.p) {
+                        predPoints.push(point);
+                        if (predPoints.length > maxPoints) predPoints.shift();
+                    } else {
+                        rawPoints.push(point);
+                        if (rawPoints.length > maxPoints) rawPoints.shift();
+                    }
+                }
+
                 if (data.a !== undefined) {
                     const now = Date.now();
                     accuracyBuffer.push({ value: data.a, time: now });
@@ -338,11 +346,15 @@ namespace AdaptiveFilter
             vCtx.stroke();
             
             vCtx.fillStyle = '#00bcd4';
-            rawPoints.forEach(p => { const t = transform(p); vCtx.beginPath(); vCtx.arc(t.x, t.y, 3, 0, Math.PI * 2); vCtx.fill(); });
+            rawPoints.forEach(p => { const t = transform(p); vCtx.beginPath(); vCtx.arc(t.x, t.y, 4.5, 0, Math.PI * 2); vCtx.fill(); });
 
             vCtx.beginPath(); vCtx.strokeStyle = '#ff4081'; vCtx.lineWidth = 2;
             predPoints.forEach((p, i) => { const t = transform(p); if (i === 0) vCtx.moveTo(t.x, t.y); else vCtx.lineTo(t.x, t.y); });
             vCtx.stroke();
+
+            // Draw a filled dot at each predicted point
+            vCtx.fillStyle = '#ff4081';
+            predPoints.forEach(p => { const t = transform(p); vCtx.beginPath(); vCtx.arc(t.x, t.y, 3, 0, Math.PI * 2); vCtx.fill(); });
             requestAnimationFrame(draw);
         }
         
@@ -354,7 +366,7 @@ namespace AdaptiveFilter
 
         private readonly ConcurrentDictionary<WebSocket, int> _socketSendingStates = new();
 
-        public void BroadcastData(Vector2 pos, double time, bool isPrediction, float accuracy = 0, double[]? weights = null, float rate = 0, int[]? layerSizes = null, int iterations = 0)
+        public void BroadcastData(Vector2 pos, double time, bool isPrediction, float accuracy = 0, double[]? weights = null, float rate = 0, int[]? layerSizes = null, int iterations = 0, Vector2[]? predictedPoints = null)
         {
             if (_sockets.IsEmpty) return;
 
@@ -383,6 +395,18 @@ namespace AdaptiveFilter
                 {
                     sb.Append($"{weights[i]:F3}");
                     if (i < weights.Length - 1) sb.Append(',');
+                }
+                sb.Append(']');
+            }
+            // Include an array of predicted points for visualization (if provided)
+            if (predictedPoints != null && predictedPoints.Length > 0)
+            {
+                sb.Append(",\"pp\":[");
+                for (int i = 0; i < predictedPoints.Length; i++)
+                {
+                    var p = predictedPoints[i];
+                    sb.Append($"{{\"x\":{p.X:F2},\"y\":{p.Y:F2}}}");
+                    if (i < predictedPoints.Length - 1) sb.Append(',');
                 }
                 sb.Append(']');
             }

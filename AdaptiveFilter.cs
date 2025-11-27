@@ -13,7 +13,13 @@ namespace AdaptiveFilter
     [PluginName("AdaptiveFilter")]
     public class AdaptiveFilter : IPositionedPipelineElement<IDeviceReport>, IDisposable
     {
+        // Interface members required by OpenTabletDriver.Plugin
+        public event Action<IDeviceReport>? Emit;
+        public PipelinePosition Position => PipelinePosition.PostTransform;
+
         private PredictionCore _core = new PredictionCore();
+        [Property("Prediction Offset"), Unit("ms"), DefaultPropertyValue(0f)]
+        public float PredictionOffset { get; set; }
         private readonly Stopwatch _timer = new Stopwatch();
         private WebInterface? _webInterface;
         private CancellationTokenSource? _cts;
@@ -24,18 +30,11 @@ namespace AdaptiveFilter
         private double _lastConsumeTime = 0;
         private double _lastEmitTime = 0;
         private readonly AntiChatterFilter _antiChatter = new AntiChatterFilter();
-        
+
         // Accuracy Stats
         private Vector2 _lastPredictedPosForAccuracy;
         private double _lastAccuracyCheckTime;
         private float _currentAccuracy;
-
-        public event Action<IDeviceReport>? Emit;
-
-        public PipelinePosition Position => PipelinePosition.PostTransform;
-
-        [Property("Prediction Offset"), Unit("ms"), DefaultPropertyValue(0f)]
-        public float PredictionOffset { get; set; }
 
         [Property("Dynamic Lookahead"), DefaultPropertyValue(false)]
         public bool UseDynamicLookahead { get; set; } = false;
@@ -216,7 +215,7 @@ namespace AdaptiveFilter
                                     }
                                     outputCount++;
                                     
-                                    if (now - _lastWebUpdate > 16)
+                                    if (now - _lastPredWebUpdate > 16)
                                     {
                                         double[]? weights = null;
                                         int[]? layerSizes = null;
@@ -228,8 +227,19 @@ namespace AdaptiveFilter
                                             lastWeightBroadcast = now;
                                         }
 
-                                        _webInterface?.BroadcastData(predictedPos, now, true, _currentAccuracy, weights, currentRate, layerSizes, iterations);
-                                        _lastWebUpdate = now;
+                                        // Also send a short predicted trajectory for visualization
+                                        Vector2[]? predictedSeq = null;
+                                        try
+                                        {
+                                            predictedSeq = _core.PredictSequence(8, currentLookahead);
+                                        }
+                                        catch
+                                        {
+                                            predictedSeq = null;
+                                        }
+
+                                        _webInterface?.BroadcastData(predictedPos, now, true, _currentAccuracy, weights, currentRate, layerSizes, iterations, predictedSeq);
+                                        _lastPredWebUpdate = now;
                                     }
                                 }
                             }
@@ -255,6 +265,10 @@ namespace AdaptiveFilter
         private float _currentVelocity = 0;
         private Vector2 _lastVelocityPos;
         private double _lastVelocityTime;
+        // Separate web update timestamps to avoid throttling races between
+        // raw input broadcasts and predicted broadcasts.
+        private double _lastRawWebUpdate = 0;
+        private double _lastPredWebUpdate = 0;
 
         public void Consume(IDeviceReport value)
         {
@@ -298,10 +312,10 @@ namespace AdaptiveFilter
                         _lastEmitTime = now;
                     }
                     
-                    if (now - _lastWebUpdate > 16)
+                    if (now - _lastRawWebUpdate > 16)
                     {
                         _webInterface?.BroadcastData(filteredPos, now, false, _currentAccuracy);
-                        _lastWebUpdate = now;
+                        _lastRawWebUpdate = now;
                     }
                 }
             }
