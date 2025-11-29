@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Linq;
 
 namespace AdaptiveFilter
@@ -9,10 +10,14 @@ namespace AdaptiveFilter
     {
         private readonly int _capacity;
         private readonly Queue<TimeSeriesPoint> _points;
-        private NeuralNetwork _nn;
+        private NeuralNetwork _nn = null!;
         private readonly OneEuroFilter _filterX;
         private readonly OneEuroFilter _filterY;
         
+        // Thread-safe collection for reinforcement points visualization
+        private readonly ConcurrentQueue<Vector2> _reinforcementPoints = new();
+        private const int MaxReinforcementPoints = 150;
+
         public bool IsReady => _points.Count >= _capacity;
         public int Complexity { get; set; } = 2; 
         public int[] LayerSizes => _nn.Layers;
@@ -96,10 +101,6 @@ namespace AdaptiveFilter
 
         private void RebuildNetwork()
         {
-            // Calculate input size based on features
-            // Base: 5 deltas × 2 (X,Y) = 10
-            // + Absolute positions: 5 positions × 2 (X,Y) = 10
-            // + Time deltas: 5 time differences = 5
             int inputSize = 10; // Base deltas
             if (_useAbsolutePosition) inputSize += 10; // Absolute X,Y positions
             if (_useTimeDelta) inputSize += 5; // Time differences
@@ -113,7 +114,7 @@ namespace AdaptiveFilter
             layers[layers.Length - 1] = 2;
             
             _nn = new NeuralNetwork(layers);
-            TrainingIterations = 0; // Reset training count when network changes
+            TrainingIterations = 0; 
         }
 
         public void Add(Vector2 point, double time)
@@ -127,6 +128,14 @@ namespace AdaptiveFilter
             if (IsReady)
             {
                 Train();
+            }
+        }
+
+        public Vector2[] GetReinforcementPoints()
+        {
+            lock (_reinforcementPoints)
+            {
+                return _reinforcementPoints.ToArray();
             }
         }
 
@@ -150,63 +159,51 @@ namespace AdaptiveFilter
             // Train on actual data
             TrainOnSequence(trainingDeltas, trainingPoints);
             
-            // Optionally train on interpolated data for the last 1-2 inputs
-            if (_useInterpolatedTraining && trainingPoints.Length >= 3)
+            // Interpolated training - ONLY between P3→P4 (3rd and 2nd most recent)
+            if (_useInterpolatedTraining && trainingPoints.Length >= 6)
             {
-                // Dynamically request interpolated sequences near the end of the buffer.
-                // We'll compute a dynamic fraction based on local motion: if motion between the two
-                // points is faster than average, shift the interpolation fraction toward the later point.
-                double avgSpeed = 0;
-                for (int i = 0; i < trainingDeltas.Length; i++) avgSpeed += trainingDeltas[i].Length();
-                avgSpeed /= Math.Max(1, trainingDeltas.Length);
-
-                // Interpolate between last two inputs (indices 4 and 5)
+                // Check for "bad" interpolation segment (jitter/noise)
+                Vector2 p3 = trainingPoints[3].Point;
+                Vector2 p4 = trainingPoints[4].Point;
+                Vector2 p2 = trainingPoints[2].Point;
+                
+                Vector2 segmentDelta = p4 - p3;
+                Vector2 historyDelta = p3 - p2; 
+                
+                bool isWrongDirection = Vector2.Dot(segmentDelta, historyDelta) < 0;
+                bool isTooClose = segmentDelta.Length() < 0.5f;
+                
+                Vector2? punishmentTarget = null;
+                float learningRateScale = 1.0f;
+                
+                if (isWrongDirection && isTooClose)
                 {
-                    double speedBetween = trainingDeltas.Length > 4 ? trainingDeltas[4].Length() : avgSpeed;
-                    double fraction = 0.5 + ((speedBetween / Math.Max(1e-6, avgSpeed)) - 1.0) * 0.25;
-                    fraction = Math.Clamp(fraction, 0.2, 0.8);
-                    var interpolated1 = InterpolateTrainingDataAtFraction(trainingPoints, trainingDeltas, 4, 5, fraction);
-                    if (interpolated1 != null)
-                    {
-                        TrainOnSequence(interpolated1.Value.deltas, interpolated1.Value.points);
-                    }
+                    punishmentTarget = Vector2.Zero;
+                    learningRateScale = 0.5f;
                 }
-
-                // Interpolate between inputs 3 and 4
+                
+                double[] fractions = { 0.33, 0.5, 0.67 };
+                
+                foreach (double fraction in fractions)
                 {
-                    double speedBetween = trainingDeltas.Length > 3 ? trainingDeltas[3].Length() : avgSpeed;
-                    double fraction = 0.5 + ((speedBetween / Math.Max(1e-6, avgSpeed)) - 1.0) * 0.25;
-                    fraction = Math.Clamp(fraction, 0.2, 0.8);
-                    var interpolated2 = InterpolateTrainingDataAtFraction(trainingPoints, trainingDeltas, 3, 4, fraction);
-                    if (interpolated2 != null)
+                    var interpolated = InterpolateTrainingDataAtFraction(trainingPoints, trainingDeltas, 3, 4, fraction);
+                    if (interpolated != null)
                     {
-                        TrainOnSequence(interpolated2.Value.deltas, interpolated2.Value.points);
+                        TrainOnSequence(interpolated.Value.deltas, interpolated.Value.points, punishmentTarget, learningRateScale);
                     }
                 }
             }
         }
 
-        private (Vector2[] deltas, TimeSeriesPoint[] points)? InterpolateTrainingData(
-            TimeSeriesPoint[] originalPoints, Vector2[] originalDeltas, int idx1, int idx2)
-        {
-            return InterpolateTrainingDataAtFraction(originalPoints, originalDeltas, idx1, idx2, 0.5);
-        }
-
-        // More flexible interpolation: allow specifying fraction [0..1] between idx1 and idx2
         private (Vector2[] deltas, TimeSeriesPoint[] points)? InterpolateTrainingDataAtFraction(
             TimeSeriesPoint[] originalPoints, Vector2[] originalDeltas, int idx1, int idx2, double fraction)
         {
             if (idx1 < 0 || idx2 >= originalPoints.Length) return null;
-
-            // Ensure we have a real "next" point after idx2 to avoid extrapolating
-            // Training requires a real observed future delta (originalDeltas[idx2])
-            // so idx2+1 must be within the bounds of originalPoints.
             if (idx2 + 1 >= originalPoints.Length) return null;
 
             var p1 = originalPoints[idx1];
             var p2 = originalPoints[idx2];
 
-            // Ensure fraction is in [0,1]
             fraction = Math.Clamp(fraction, 0.0, 1.0);
 
             double timeDelta = p2.Time - p1.Time;
@@ -218,21 +215,17 @@ namespace AdaptiveFilter
             Vector2 interpPoint = Vector2.Lerp(p1.Point, p2.Point, t);
             var interpolatedPoint = new TimeSeriesPoint(interpPoint, targetTime);
 
-            // Build new sequence with interpolated point
             var newPoints = new TimeSeriesPoint[6];
             var newDeltas = new Vector2[6];
 
-            // Copy points before interpolation
             for (int i = 0; i < idx1; i++)
             {
                 newPoints[i] = originalPoints[i];
             }
 
-            // Insert interpolated point sequence at idx1 and shift
             newPoints[idx1] = p1;
             newPoints[idx1 + 1] = interpolatedPoint;
 
-            // Shift remaining points
             int offset = 0;
             for (int i = idx1 + 2; i < 6; i++)
             {
@@ -243,19 +236,16 @@ namespace AdaptiveFilter
                 }
                 else
                 {
-                    // Not enough points for full sequence
                     return null;
                 }
                 offset++;
             }
 
-            // Calculate deltas from new points
             for (int i = 0; i < 5; i++)
             {
                 newDeltas[i] = newPoints[i + 1].Point - newPoints[i].Point;
             }
 
-            // Target delta: try to reuse original when available
             if (originalDeltas.Length > idx2)
             {
                 newDeltas[5] = originalDeltas[idx2];
@@ -268,19 +258,16 @@ namespace AdaptiveFilter
             return (newDeltas, newPoints);
         }
 
-        private void TrainOnSequence(Vector2[] trainingDeltas, TimeSeriesPoint[] trainingPoints)
+        private void TrainOnSequence(Vector2[] trainingDeltas, TimeSeriesPoint[] trainingPoints, Vector2? targetOverride = null, float learningRateScale = 1.0f)
         {
-            // Build input array dynamically
             List<double> inputList = new List<double>();
             
-            // Add deltas (base feature)
             for(int i=0; i<5; i++)
             {
                 inputList.Add(trainingDeltas[i].X / 100.0);
                 inputList.Add(trainingDeltas[i].Y / 100.0);
             }
             
-            // Add absolute positions if enabled
             if (_useAbsolutePosition)
             {
                 for(int i=0; i<5; i++)
@@ -290,7 +277,6 @@ namespace AdaptiveFilter
                 }
             }
             
-            // Add time deltas if enabled
             if (_useTimeDelta)
             {
                 for(int i=0; i<5; i++)
@@ -303,11 +289,36 @@ namespace AdaptiveFilter
             double[] nnInputs = inputList.ToArray();
             
             double[] targets = new double[2];
-            targets[0] = trainingDeltas[5].X / 100.0;
-            targets[1] = trainingDeltas[5].Y / 100.0;
+            if (targetOverride.HasValue)
+            {
+                targets[0] = targetOverride.Value.X / 100.0;
+                targets[1] = targetOverride.Value.Y / 100.0;
+            }
+            else
+            {
+                targets[0] = trainingDeltas[5].X / 100.0;
+                targets[1] = trainingDeltas[5].Y / 100.0;
+            }
             
-            _nn.BackPropagate(nnInputs, targets, LearningRate);
+            _nn.BackPropagate(nnInputs, targets, LearningRate * learningRateScale);
             TrainingIterations++;
+            
+            if (trainingPoints.Length >= 6)
+            {
+                Vector2 reinforcementPos = trainingPoints[5].Point;
+                lock (_reinforcementPoints)
+                {
+                    _reinforcementPoints.Enqueue(reinforcementPos);
+                    while (_reinforcementPoints.Count > MaxReinforcementPoints)
+                    {
+                        _reinforcementPoints.TryDequeue(out _);
+                    }
+                    if (_reinforcementPoints.Count % 10 == 0)
+                    {
+                        Console.WriteLine($"Reinforcement points: {_reinforcementPoints.Count}");
+                    }
+                }
+            }
         }
 
         public Vector2 Predict(double targetTime, float lookahead = 1.0f)
@@ -330,17 +341,14 @@ namespace AdaptiveFilter
             var inputDeltas = deltas.Skip(deltas.Count - 5).ToArray();
             var inputPoints = points.Skip(points.Length - 5).ToArray();
             
-            // Build input array dynamically
             List<double> inputList = new List<double>();
             
-            // Add deltas (base feature)
             for(int i=0; i<5; i++)
             {
                 inputList.Add(inputDeltas[i].X / 100.0);
                 inputList.Add(inputDeltas[i].Y / 100.0);
             }
             
-            // Add absolute positions if enabled
             if (_useAbsolutePosition)
             {
                 for(int i=0; i<5; i++)
@@ -350,7 +358,6 @@ namespace AdaptiveFilter
                 }
             }
             
-            // Add time deltas if enabled
             if (_useTimeDelta)
             {
                 for(int i=0; i<4; i++)
@@ -358,7 +365,6 @@ namespace AdaptiveFilter
                     double timeDelta = inputPoints[i+1].Time - inputPoints[i].Time;
                     inputList.Add(timeDelta / 10.0);
                 }
-                // For the 5th time delta, use the average of the previous 4
                 double avgTimeDelta = 0;
                 for(int i=0; i<4; i++)
                 {
@@ -372,11 +378,9 @@ namespace AdaptiveFilter
             
             var output = _nn.FeedForward(nnInputs);
             
-            // Safety check: validate output
             if (double.IsNaN(output[0]) || double.IsNaN(output[1]) || 
                 double.IsInfinity(output[0]) || double.IsInfinity(output[1]))
             {
-                // Network diverged - use last known position
                 return lastPoint.Point;
             }
             
@@ -394,9 +398,6 @@ namespace AdaptiveFilter
             return new Vector2((float)smoothedX, (float)smoothedY);
         }
 
-        // Predict a short sequence of future positions without mutating the internal filters.
-        // This simulates iterative predictions by using a temporary copy of the recent points
-        // and appending simulated predicted points to generate realistic next-step inputs.
         public Vector2[] PredictSequence(int count, float lookahead = 1.0f)
         {
             if (!IsReady || _points.Count < 2) return Array.Empty<Vector2>();
@@ -404,14 +405,13 @@ namespace AdaptiveFilter
             var tempPoints = new List<TimeSeriesPoint>(_points.ToArray());
             var results = new List<Vector2>();
 
-            // Estimate a reasonable time step using average of recent deltas
             double avgDt = 0;
             if (tempPoints.Count >= 2)
             {
                 for (int i = 0; i < tempPoints.Count - 1; i++) avgDt += (tempPoints[i + 1].Time - tempPoints[i].Time);
                 avgDt /= Math.Max(1, tempPoints.Count - 1);
             }
-            if (avgDt <= 0) avgDt = 1; // fallback 1 ms
+            if (avgDt <= 0) avgDt = 1; 
 
             for (int k = 0; k < count; k++)
             {
@@ -425,14 +425,12 @@ namespace AdaptiveFilter
 
                 if (deltas.Count < 5)
                 {
-                    // Not enough history to continue predicting
                     break;
                 }
 
                 var inputDeltas = deltas.Skip(deltas.Count - 5).ToArray();
                 var inputPoints = points.Skip(points.Length - 5).ToArray();
 
-                // Build input array dynamically (same as Predict, but without filters)
                 List<double> inputList = new List<double>();
                 for(int i=0; i<5; i++)
                 {
@@ -477,9 +475,7 @@ namespace AdaptiveFilter
                 var nextPos = lastPoint.Point + new Vector2(predDeltaX, predDeltaY);
                 results.Add(nextPos);
 
-                // Append simulated point with estimated time so next iteration can use it
                 tempPoints.Add(new TimeSeriesPoint(nextPos, lastPoint.Time + avgDt));
-                // Keep the tempPoints length reasonable (simulate same capacity)
                 if (tempPoints.Count > _capacity) tempPoints.RemoveAt(0);
             }
 

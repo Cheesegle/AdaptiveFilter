@@ -79,6 +79,9 @@ namespace AdaptiveFilter
         [Property("Web UI Port"), DefaultPropertyValue(5000)]
         public int WebPort { get; set; } = 5000;
 
+        [Property("Bypass OTD Output"), DefaultPropertyValue(false)]
+        public bool BypassOTD { get; set; } = false;
+
         public AdaptiveFilter()
         {
             _timer.Start();
@@ -105,7 +108,6 @@ namespace AdaptiveFilter
             _upsampleTask = Task.Factory.StartNew(() => 
             {
                 var token = _cts.Token;
-                double interval = 1000.0 / TargetRate;
                 double nextTick = _timer.Elapsed.TotalMilliseconds;
                 double lastWeightBroadcast = 0;
                 
@@ -118,6 +120,7 @@ namespace AdaptiveFilter
 
                 while (!token.IsCancellationRequested)
                 {
+                    double interval = 1000.0 / Math.Max(1, TargetRate);
                     double now = _timer.Elapsed.TotalMilliseconds;
                     
                     if (now >= nextTick)
@@ -210,10 +213,22 @@ namespace AdaptiveFilter
                                     lock (_lock)
                                     {
                                         tabletReport.Position = predictedPos;
-                                        Emit?.Invoke(tabletReport);
+                                        
+                                        if (BypassOTD)
+                                        {
+                                            InputInjector.MoveMouse(predictedPos);
+                                        }
+                                        else
+                                        {
+                                            Emit?.Invoke(tabletReport);
+                                        }
+                                        
                                         _lastEmitTime = now;
                                     }
                                     outputCount++;
+                                    
+                                    // Buffer point for web visualization
+                                    _predictionBuffer.Add(predictedPos);
                                     
                                     if (now - _lastPredWebUpdate > 16)
                                     {
@@ -238,7 +253,8 @@ namespace AdaptiveFilter
                                             predictedSeq = null;
                                         }
 
-                                        _webInterface?.BroadcastData(predictedPos, now, true, _currentAccuracy, weights, currentRate, layerSizes, iterations, predictedSeq);
+                                        _webInterface?.BroadcastData(predictedPos, now, true, _currentAccuracy, weights, currentRate, layerSizes, iterations, predictedSeq, _predictionBuffer);
+                                        _predictionBuffer.Clear();
                                         _lastPredWebUpdate = now;
                                     }
                                 }
@@ -269,6 +285,7 @@ namespace AdaptiveFilter
         // raw input broadcasts and predicted broadcasts.
         private double _lastRawWebUpdate = 0;
         private double _lastPredWebUpdate = 0;
+        private List<Vector2> _predictionBuffer = new List<Vector2>();
 
         public void Consume(IDeviceReport value)
         {
@@ -308,7 +325,16 @@ namespace AdaptiveFilter
                     if (UseHybridMode)
                     {
                         report.Position = filteredPos;
-                        Emit?.Invoke(report);
+                        
+                        if (BypassOTD)
+                        {
+                            InputInjector.MoveMouse(filteredPos);
+                        }
+                        else
+                        {
+                            Emit?.Invoke(report);
+                        }
+                        
                         _lastEmitTime = now;
                     }
                     
@@ -322,7 +348,14 @@ namespace AdaptiveFilter
             
             if (!_core.IsReady)
             {
-                Emit?.Invoke(value);
+                if (BypassOTD && value is ITabletReport tr)
+                {
+                    InputInjector.MoveMouse(tr.Position);
+                }
+                else
+                {
+                    Emit?.Invoke(value);
+                }
             }
         }
 

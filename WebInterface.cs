@@ -160,6 +160,13 @@ namespace AdaptiveFilter
         <div class=""stat-box""><div class=""stat-value"" id=""rate"">0 Hz</div><div class=""stat-label"">Output Rate</div></div>
         <div class=""stat-box""><div class=""stat-value"" id=""accuracy"">0.00</div><div class=""stat-label"">Accuracy (mm)</div></div>
         <div class=""stat-box""><div class=""stat-value"" id=""iterations"">0</div><div class=""stat-label"">Training Iterations</div></div>
+        <div class=""stat-box"" style=""min-width: 200px; text-align: left;"">
+            <div style=""display: flex; justify-content: space-between;"">
+                <span class=""stat-label"" style=""font-size: 14px;"">Trail Duration</span>
+                <span class=""stat-label"" id=""trail-val"" style=""font-size: 14px;"">500 ms</span>
+            </div>
+            <input type=""range"" id=""trail-slider"" min=""100"" max=""5000"" step=""100"" value=""500"" style=""width: 100%;"">
+        </div>
     </div>
     <div id=""main-container"">
         <div id=""left-panel"">
@@ -186,8 +193,17 @@ namespace AdaptiveFilter
         const rateEl = document.getElementById('rate');
         const accEl = document.getElementById('accuracy');
         const iterEl = document.getElementById('iterations');
+        const trailSlider = document.getElementById('trail-slider');
+        const trailVal = document.getElementById('trail-val');
+        let trailDuration = 500;
+        
+        trailSlider.addEventListener('input', (e) => {
+            trailDuration = parseInt(e.target.value);
+            trailVal.textContent = `${trailDuration} ms`;
+        });
+
         let rawPoints = [], predPoints = [];
-        const maxPoints = 100;
+        const maxPoints = 20000; // Safety cap
         let accuracyBuffer = [];
         const accuracyWindow = 5000; // 5 seconds in ms
 
@@ -221,8 +237,15 @@ namespace AdaptiveFilter
                     predPoints = data.pp.map(p => ({ x: p.x, y: p.y, t: Date.now() }));
                     if (predPoints.length > maxPoints) predPoints = predPoints.slice(-maxPoints);
                 }
+                // Handle batch of predicted points
+                if (data.b && Array.isArray(data.b)) {
+                    data.b.forEach(p => {
+                        predPoints.push({ x: p.x, y: p.y, t: Date.now() });
+                    });
+                    if (predPoints.length > maxPoints) predPoints = predPoints.slice(-maxPoints);
+                }
                 else {
-                    const point = { x: data.x, y: data.y, t: data.t };
+                    const point = { x: data.x, y: data.y, t: Date.now() };
                     if (data.p) {
                         predPoints.push(point);
                         if (predPoints.length > maxPoints) predPoints.shift();
@@ -326,6 +349,12 @@ namespace AdaptiveFilter
 
         function draw() {
             vCtx.clearRect(0, 0, visualizer.width, visualizer.height);
+            
+            // Filter points by time
+            const now = Date.now();
+            rawPoints = rawPoints.filter(p => now - p.t < trailDuration);
+            predPoints = predPoints.filter(p => now - p.t < trailDuration);
+            
             let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
             const allPoints = [...rawPoints, ...predPoints];
             if (allPoints.length === 0) { requestAnimationFrame(draw); return; }
@@ -366,7 +395,7 @@ namespace AdaptiveFilter
 
         private readonly ConcurrentDictionary<WebSocket, int> _socketSendingStates = new();
 
-        public void BroadcastData(Vector2 pos, double time, bool isPrediction, float accuracy = 0, double[]? weights = null, float rate = 0, int[]? layerSizes = null, int iterations = 0, Vector2[]? predictedPoints = null)
+        public void BroadcastData(Vector2 pos, double time, bool isPrediction, float accuracy = 0, double[]? weights = null, float rate = 0, int[]? layerSizes = null, int iterations = 0, Vector2[]? predictedPoints = null, List<Vector2>? batch = null)
         {
             if (_sockets.IsEmpty) return;
 
@@ -407,6 +436,18 @@ namespace AdaptiveFilter
                     var p = predictedPoints[i];
                     sb.Append($"{{\"x\":{p.X:F2},\"y\":{p.Y:F2}}}");
                     if (i < predictedPoints.Length - 1) sb.Append(',');
+                }
+                sb.Append(']');
+            }
+            // Include batch of predicted points
+            if (batch != null && batch.Count > 0)
+            {
+                sb.Append(",\"b\":[");
+                for (int i = 0; i < batch.Count; i++)
+                {
+                    var p = batch[i];
+                    sb.Append($"{{\"x\":{p.X:F2},\"y\":{p.Y:F2}}}");
+                    if (i < batch.Count - 1) sb.Append(',');
                 }
                 sb.Append(']');
             }
