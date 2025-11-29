@@ -66,6 +66,12 @@ namespace AdaptiveFilter
         [Property("Use Predicted Input"), DefaultPropertyValue(false)]
         public bool UsePredictedInput { get => _core.UsePredictedInput; set => _core.UsePredictedInput = value; }
 
+        [Property("VSync Mode"), DefaultPropertyValue(false)]
+        public bool VSyncMode { get; set; } = false;
+
+        [Property("VSync Offset"), Unit("ms"), DefaultPropertyValue(1.5f)]
+        public float VSyncOffset { get; set; } = 1.5f;
+
         [Property("Target Rate"), Unit("Hz"), DefaultPropertyValue(1000f)]
         public float TargetRate { get; set; } = 1000f;
 
@@ -118,18 +124,54 @@ namespace AdaptiveFilter
                 double lastRateCheck = 0;
                 float currentRate = 0;
                 
+                // Processing time tracking
+                double totalProcessingTime = 0;
+                int processingCount = 0;
+                double avgProcessingTime = 0;
+                
                 Vector2 lastPos = Vector2.Zero;
                 double lastPosTime = 0;
+                
+                // VSync tracking
+                bool vsyncAvailable = VSyncHelper.IsAvailable;
+                double lastVSyncCheck = 0;
 
                 while (!token.IsCancellationRequested)
                 {
                     double interval = 1000.0 / Math.Max(1, TargetRate);
                     double now = _timer.Elapsed.TotalMilliseconds;
                     
+                    // VSync Mode: align updates with monitor refresh
+                    if (VSyncMode && vsyncAvailable)
+                    {
+                        // Check VSync availability periodically
+                        if (now - lastVSyncCheck > 1000)
+                        {
+                            vsyncAvailable = VSyncHelper.IsAvailable;
+                            lastVSyncCheck = now;
+                            
+                            if (vsyncAvailable)
+                            {
+                                double refreshRate = VSyncHelper.GetRefreshRate();
+                                if (refreshRate > 0)
+                                {
+                                    interval = 1000.0 / refreshRate;
+                                }
+                            }
+                        }
+                        
+                        // Get optimal timing for next update
+                        double optimalOffset = VSyncHelper.GetOptimalUpdateOffset(VSyncOffset);
+                        nextTick = now + optimalOffset;
+                    }
+                    
                     if (now >= nextTick)
                     {
-                        nextTick += interval;
-                        if (now > nextTick + interval) nextTick = now + interval;
+                        if (!VSyncMode || !vsyncAvailable)
+                        {
+                            nextTick += interval;
+                            if (now > nextTick + interval) nextTick = now + interval;
+                        }
 
                         bool isIdle = (now - _lastConsumeTime) > 100;
                         bool skipUpsample = UseHybridMode && (now - _lastEmitTime) < interval;
@@ -138,6 +180,7 @@ namespace AdaptiveFilter
                         {
                             try
                             {
+                                double processingStart = _timer.Elapsed.TotalMilliseconds;
                                 float currentLookahead = Lookahead;
                                 
                                 // Dynamic Lookahead Logic
@@ -259,11 +302,16 @@ namespace AdaptiveFilter
                                             predictedSeq = null;
                                         }
 
-                                        _webInterface?.BroadcastData(predictedPos, now, true, _currentAccuracy, weights, currentRate, layerSizes, iterations, predictedSeq, _predictionBuffer);
+                                        _webInterface?.BroadcastData(predictedPos, now, true, _currentAccuracy, weights, currentRate, layerSizes, iterations, predictedSeq, _predictionBuffer, avgProcessingTime);
                                         _predictionBuffer.Clear();
                                         _lastPredWebUpdate = now;
                                     }
                                 }
+                                
+                                // Track processing time
+                                double processingEnd = _timer.Elapsed.TotalMilliseconds;
+                                totalProcessingTime += (processingEnd - processingStart);
+                                processingCount++;
                             }
                             catch
                             {
@@ -274,6 +322,15 @@ namespace AdaptiveFilter
                     if (now - lastRateCheck > 500)
                     {
                         currentRate = (float)(outputCount * 1000.0 / (now - lastRateCheck));
+                        
+                        // Calculate average processing time
+                        if (processingCount > 0)
+                        {
+                            avgProcessingTime = totalProcessingTime / processingCount;
+                            totalProcessingTime = 0;
+                            processingCount = 0;
+                        }
+                        
                         outputCount = 0;
                         lastRateCheck = now;
                     }

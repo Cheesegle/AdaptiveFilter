@@ -159,6 +159,7 @@ namespace AdaptiveFilter
         <div class=""stat-box""><div class=""stat-value"" id=""latency"">0 ms</div><div class=""stat-label"">Prediction Offset</div></div>
         <div class=""stat-box""><div class=""stat-value"" id=""rate"">0 Hz</div><div class=""stat-label"">Output Rate</div></div>
         <div class=""stat-box""><div class=""stat-value"" id=""accuracy"">0.00</div><div class=""stat-label"">Accuracy (mm)</div></div>
+        <div class=""stat-box""><div class=""stat-value"" id=""processing-time"">0.00 ms</div><div class=""stat-label"">Processing Time</div></div>
         <div class=""stat-box""><div class=""stat-value"" id=""iterations"">0</div><div class=""stat-label"">Training Iterations</div></div>
         <div class=""stat-box"" style=""min-width: 200px; text-align: left;"">
             <div style=""display: flex; justify-content: space-between;"">
@@ -193,6 +194,7 @@ namespace AdaptiveFilter
         const rateEl = document.getElementById('rate');
         const accEl = document.getElementById('accuracy');
         const iterEl = document.getElementById('iterations');
+        const procTimeEl = document.getElementById('processing-time');
         const trailSlider = document.getElementById('trail-slider');
         const trailVal = document.getElementById('trail-val');
         let trailDuration = 500;
@@ -276,6 +278,10 @@ namespace AdaptiveFilter
 
                 if (data.it !== undefined) {
                     iterEl.textContent = data.it.toLocaleString();
+                }
+
+                if (data.pt !== undefined) {
+                    procTimeEl.textContent = `${data.pt.toFixed(3)} ms`;
                 }
 
                 if (data.w && data.ls) {
@@ -395,7 +401,7 @@ namespace AdaptiveFilter
 
         private readonly ConcurrentDictionary<WebSocket, int> _socketSendingStates = new();
 
-        public void BroadcastData(Vector2 pos, double time, bool isPrediction, float accuracy = 0, double[]? weights = null, float rate = 0, int[]? layerSizes = null, int iterations = 0, Vector2[]? predictedPoints = null, List<Vector2>? batch = null)
+        public void BroadcastData(Vector2 pos, double time, bool isPrediction, float accuracy = 0, double[]? weights = null, float rate = 0, int[]? layerSizes = null, int iterations = 0, Vector2[]? predictedPoints = null, List<Vector2>? batch = null, double processingTime = 0)
         {
             if (_sockets.IsEmpty) return;
 
@@ -409,7 +415,8 @@ namespace AdaptiveFilter
             sb.Append($"\"a\":{accuracy:F3}");
             
             if (rate > 0) sb.Append($",\"r\":{rate:F1}");
-            if (iterations > 0) sb.Append($",\"i\":{iterations}");
+            if (iterations > 0) sb.Append($",\"it\":{iterations}");
+            if (processingTime > 0) sb.Append($",\"pt\":{processingTime:F3}");
 
             if (weights != null && layerSizes != null)
             {
