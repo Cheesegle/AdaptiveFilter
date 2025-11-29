@@ -63,6 +63,9 @@ namespace AdaptiveFilter
         [Property("Use Interpolated Training"), DefaultPropertyValue(false)]
         public bool UseInterpolatedTraining { get => _core.UseInterpolatedTraining; set => _core.UseInterpolatedTraining = value; }
 
+        [Property("Use Predicted Input"), DefaultPropertyValue(false)]
+        public bool UsePredictedInput { get => _core.UsePredictedInput; set => _core.UsePredictedInput = value; }
+
         [Property("Target Rate"), Unit("Hz"), DefaultPropertyValue(1000f)]
         public float TargetRate { get; set; } = 1000f;
 
@@ -204,6 +207,9 @@ namespace AdaptiveFilter
                                 {
                                     continue;
                                 }
+                            
+                                // Record this predicted output for use in future predictions
+                                _core.AddPredictedOutput(predictedPos, now + PredictionOffset);
                             
                                 _lastPredictedPosForAccuracy = predictedPos;
                                 _lastAccuracyCheckTime = now;

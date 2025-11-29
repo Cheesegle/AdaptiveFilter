@@ -10,6 +10,7 @@ namespace AdaptiveFilter
     {
         private readonly int _capacity;
         private readonly Queue<TimeSeriesPoint> _points;
+        private TimeSeriesPoint? _lastPredictedOutput = null;
         private NeuralNetwork _nn = null!;
         private readonly OneEuroFilter _filterX;
         private readonly OneEuroFilter _filterY;
@@ -88,6 +89,13 @@ namespace AdaptiveFilter
             set => _useInterpolatedTraining = value;
         }
 
+        private bool _usePredictedInput = false;
+        public bool UsePredictedInput
+        {
+            get => _usePredictedInput;
+            set => _usePredictedInput = value;
+        }
+
         public PredictionCore(int capacity = 5)
         {
             _capacity = capacity;
@@ -124,11 +132,19 @@ namespace AdaptiveFilter
                 _points.Dequeue();
             }
             _points.Enqueue(new TimeSeriesPoint(point, time));
+            
+            // Clear last predicted output since we have a new raw input
+            _lastPredictedOutput = null;
 
             if (IsReady)
             {
                 Train();
             }
+        }
+        
+        public void AddPredictedOutput(Vector2 point, double time)
+        {
+            _lastPredictedOutput = new TimeSeriesPoint(point, time);
         }
 
         public Vector2[] GetReinforcementPoints()
@@ -325,7 +341,14 @@ namespace AdaptiveFilter
         {
             if (!IsReady || _points.Count < 2) return _points.LastOrDefault().Point;
 
-            var points = _points.ToArray();
+            // Optionally use the last predicted output along with raw points
+            var allPoints = new List<TimeSeriesPoint>(_points);
+            if (_usePredictedInput && _lastPredictedOutput.HasValue)
+            {
+                allPoints.Add(_lastPredictedOutput.Value);
+            }
+            
+            var points = allPoints.ToArray();
             var lastPoint = points.Last();
             
             Vector2 predictedPos;
@@ -402,7 +425,12 @@ namespace AdaptiveFilter
         {
             if (!IsReady || _points.Count < 2) return Array.Empty<Vector2>();
 
-            var tempPoints = new List<TimeSeriesPoint>(_points.ToArray());
+            // Start with raw points plus optionally the last predicted output
+            var tempPoints = new List<TimeSeriesPoint>(_points);
+            if (_usePredictedInput && _lastPredictedOutput.HasValue)
+            {
+                tempPoints.Add(_lastPredictedOutput.Value);
+            }
             var results = new List<Vector2>();
 
             double avgDt = 0;
