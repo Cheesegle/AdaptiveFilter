@@ -91,6 +91,12 @@ namespace AdaptiveFilter
         [Property("Bypass OTD Output"), DefaultPropertyValue(false)]
         public bool BypassOTD { get; set; } = false;
 
+        [Property("Flick Protection"), DefaultPropertyValue(true)]
+        public bool FlickProtection { get => _core.FlickProtection; set => _core.FlickProtection = value; }
+
+        [Property("Flick Range"), Unit("mm"), DefaultPropertyValue(150.0f)]
+        public float FlickProtectionRange { get => _core.FlickProtectionRange; set => _core.FlickProtectionRange = value; }
+
         public AdaptiveFilter()
         {
             _timer.Start();

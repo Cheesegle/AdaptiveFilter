@@ -96,6 +96,9 @@ namespace AdaptiveFilter
             set => _usePredictedInput = value;
         }
 
+        public bool FlickProtection { get; set; } = true;
+        public float FlickProtectionRange { get; set; } = 150.0f;
+
         public PredictionCore(int capacity = 5)
         {
             _capacity = capacity;
@@ -418,7 +421,22 @@ namespace AdaptiveFilter
             double smoothedX = _filterX.Filter(predictedPos.X, targetTime);
             double smoothedY = _filterY.Filter(predictedPos.Y, targetTime);
             
-            return new Vector2((float)smoothedX, (float)smoothedY);
+            var finalPos = new Vector2((float)smoothedX, (float)smoothedY);
+
+            // Flick Protection: Clamp prediction if it deviates too far from the last known real input
+            if (FlickProtection && points.Length > 0)
+            {
+                var inputPos = points.Last().Point;
+                float dist = Vector2.Distance(finalPos, inputPos);
+                if (dist > FlickProtectionRange)
+                {
+                    // Clamp to max range
+                    var dir = Vector2.Normalize(finalPos - inputPos);
+                    finalPos = inputPos + (dir * FlickProtectionRange);
+                }
+            }
+            
+            return finalPos;
         }
 
         public Vector2[] PredictSequence(int count, float lookahead = 1.0f)
