@@ -1,8 +1,6 @@
 using System;
 using System.Diagnostics;
-using System.Linq;
 using System.Numerics;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using OpenTabletDriver.Plugin;
@@ -19,11 +17,6 @@ namespace AdaptiveFilter
         public event Action<IDeviceReport>? Emit;
         public PipelinePosition Position => PipelinePosition.PostTransform;
 
-        [DllImport("user32.dll")]
-        private static extern int GetSystemMetrics(int nIndex);
-        private const int SM_CXVIRTUALSCREEN = 78;
-        private const int SM_CYVIRTUALSCREEN = 79;
-
         private PredictionCore _core = new PredictionCore();
         [Property("Prediction Offset"), Unit("ms"), DefaultPropertyValue(0f)]
         public float PredictionOffset { get; set; }
@@ -33,6 +26,7 @@ namespace AdaptiveFilter
         private Task? _upsampleTask;
         private IDeviceReport? _lastReport;
         private object _lock = new object();
+        private double _lastWebUpdate = 0;
         private double _lastConsumeTime = 0;
         private double _lastEmitTime = 0;
         private readonly AntiChatterFilter _antiChatter = new AntiChatterFilter();
@@ -96,21 +90,6 @@ namespace AdaptiveFilter
 
         [Property("Bypass OTD Output"), DefaultPropertyValue(false)]
         public bool BypassOTD { get; set; } = false;
-
-        [Property("Use Edge Deadzone"), DefaultPropertyValue(false)]
-        public bool UseEdgeDeadzone { get; set; } = false;
-
-        [Property("Auto Detect Area"), DefaultPropertyValue(true)]
-        public bool AutoDetectArea { get; set; } = true;
-
-        [Property("Deadzone Margin"), Unit("pixels"), DefaultPropertyValue(5.0f)]
-        public float DeadzoneMargin { get; set; } = 5.0f;
-
-        [Property("Manual Area Width"), Unit("pixels"), DefaultPropertyValue(1920f)]
-        public float ManualAreaWidth { get; set; } = 1920f;
-
-        [Property("Manual Area Height"), Unit("pixels"), DefaultPropertyValue(1080f)]
-        public float ManualAreaHeight { get; set; } = 1080f;
 
         public AdaptiveFilter()
         {
@@ -371,28 +350,6 @@ namespace AdaptiveFilter
         private double _lastPredWebUpdate = 0;
         private List<Vector2> _predictionBuffer = new List<Vector2>();
 
-        private Vector2 GetActiveArea()
-        {
-            if (AutoDetectArea)
-            {
-                try
-                {
-                    int width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-                    int height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-                    if (width > 0 && height > 0)
-                    {
-                        return new Vector2(width, height);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log.Write("AdaptiveFilter", $"Failed to auto-detect screen area: {ex.Message}", LogLevel.Debug);
-                }
-            }
-
-            return new Vector2(ManualAreaWidth, ManualAreaHeight);
-        }
-
         public void Consume(IDeviceReport value)
         {
             if (value is ITabletReport report)
@@ -401,23 +358,6 @@ namespace AdaptiveFilter
                 {
                     _lastReport = report;
                     double now = _timer.Elapsed.TotalMilliseconds;
-
-                    if (UseEdgeDeadzone)
-                    {
-                        var area = GetActiveArea();
-                        float margin = DeadzoneMargin;
-                        
-                        bool inDeadzone = report.Position.X < margin || 
-                                         report.Position.X > (area.X - margin) ||
-                                         report.Position.Y < margin || 
-                                         report.Position.Y > (area.Y - margin);
-
-                        if (inDeadzone)
-                        {
-                            // Skip this report to prevent "flicks" to the edge
-                            return;
-                        }
-                    }
                     
                     // Calculate Velocity (mm/ms)
                     if (_lastVelocityTime > 0 && now > _lastVelocityTime)
