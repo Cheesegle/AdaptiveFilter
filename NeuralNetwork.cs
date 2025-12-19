@@ -42,12 +42,13 @@ namespace AdaptiveFilter
         {
             for (int i = 0; i < _weights.Length; i++)
             {
+                double range = Math.Sqrt(2.0 / (_layers[i] + _layers[i+1])); // Xavier/He-ish initialization
                 for (int j = 0; j < _weights[i].Length; j++)
                 {
-                    _biases[i + 1][j] = _random.NextDouble() * 2 - 1;
+                    _biases[i + 1][j] = (_random.NextDouble() * 2 - 1) * 0.01; // Small biases
                     for (int k = 0; k < _weights[i][j].Length; k++)
                     {
-                        _weights[i][j][k] = _random.NextDouble() * 2 - 1;
+                        _weights[i][j][k] = (_random.NextDouble() * 2 - 1) * range;
                     }
                 }
             }
@@ -62,6 +63,7 @@ namespace AdaptiveFilter
 
             for (int i = 1; i < _layers.Length; i++)
             {
+                bool isOutputLayer = (i == _layers.Length - 1);
                 for (int j = 0; j < _neurons[i].Length; j++)
                 {
                     double value = 0;
@@ -69,7 +71,9 @@ namespace AdaptiveFilter
                     {
                         value += _weights[i - 1][j][k] * _neurons[i - 1][k];
                     }
-                    _neurons[i][j] = Activate(value + _biases[i][j]);
+                    
+                    double z = value + _biases[i][j];
+                    _neurons[i][j] = isOutputLayer ? z : Activate(z);
                 }
             }
 
@@ -89,7 +93,8 @@ namespace AdaptiveFilter
             int layer = _layers.Length - 1;
             for (int i = 0; i < _neurons[layer].Length; i++)
             {
-                gammas[layer][i] = (_neurons[layer][i] - expected[i]) * ActivateDer(_neurons[layer][i]);
+                // For linear output, ActivateDer = 1.0
+                gammas[layer][i] = (_neurons[layer][i] - expected[i]);
             }
 
             for (int i = _layers.Length - 2; i > 0; i--)
@@ -110,10 +115,14 @@ namespace AdaptiveFilter
             {
                 for (int j = 0; j < _weights[i].Length; j++)
                 {
-                    _biases[i + 1][j] -= gammas[i + 1][j] * learningRate;
+                    // Gradient clipping
+                    double biasDelta = gammas[i + 1][j] * learningRate;
+                    _biases[i + 1][j] -= Math.Clamp(biasDelta, -0.1, 0.1);
+                    
                     for (int k = 0; k < _weights[i][j].Length; k++)
                     {
-                        _weights[i][j][k] -= gammas[i + 1][j] * _neurons[i][k] * learningRate;
+                        double weightDelta = gammas[i + 1][j] * _neurons[i][k] * learningRate;
+                        _weights[i][j][k] -= Math.Clamp(weightDelta, -0.1, 0.1);
                     }
                 }
             }

@@ -24,7 +24,7 @@ namespace AdaptiveFilter
         public int[] LayerSizes => _nn.Layers;
         public int TrainingIterations { get; private set; } = 0; 
 
-        public double LearningRate { get; set; } = 0.01;
+        public double LearningRate { get; set; } = 0.1;
         
         private int _hiddenSize = 16;
         public int HiddenLayerSize 
@@ -89,14 +89,14 @@ namespace AdaptiveFilter
             set => _useInterpolatedTraining = value;
         }
 
-        private bool _usePredictedInput = false;
+        private bool _usePredictedInput = true;
         public bool UsePredictedInput
         {
             get => _usePredictedInput;
             set => _usePredictedInput = value;
         }
 
-        public PredictionCore(int capacity = 5)
+        public PredictionCore(int capacity = 10)
         {
             _capacity = capacity;
             _points = new Queue<TimeSeriesPoint>(capacity);
@@ -158,8 +158,8 @@ namespace AdaptiveFilter
         private void Train()
         {
             var points = _points.ToArray();
-            int numDeltas = _points.Count - 1;
-            if (numDeltas < 2) return;
+            int numDeltas = points.Length - 1;
+            if (numDeltas < 6) return;
 
             List<Vector2> deltas = new List<Vector2>();
             for (int i = 0; i < points.Length - 1; i++)
@@ -280,8 +280,8 @@ namespace AdaptiveFilter
             
             for(int i=0; i<5; i++)
             {
-                inputList.Add(trainingDeltas[i].X / 100.0);
-                inputList.Add(trainingDeltas[i].Y / 100.0);
+                inputList.Add(trainingDeltas[i].X / 10.0);
+                inputList.Add(trainingDeltas[i].Y / 10.0);
             }
             
             if (_useAbsolutePosition)
@@ -307,13 +307,13 @@ namespace AdaptiveFilter
             double[] targets = new double[2];
             if (targetOverride.HasValue)
             {
-                targets[0] = targetOverride.Value.X / 100.0;
-                targets[1] = targetOverride.Value.Y / 100.0;
+                targets[0] = targetOverride.Value.X / 10.0;
+                targets[1] = targetOverride.Value.Y / 10.0;
             }
             else
             {
-                targets[0] = trainingDeltas[5].X / 100.0;
-                targets[1] = trainingDeltas[5].Y / 100.0;
+                targets[0] = trainingDeltas[5].X / 10.0;
+                targets[1] = trainingDeltas[5].Y / 10.0;
             }
             
             _nn.BackPropagate(nnInputs, targets, LearningRate * learningRateScale);
@@ -337,95 +337,110 @@ namespace AdaptiveFilter
             }
         }
 
-        public Vector2 Predict(double targetTime, float lookahead = 1.0f)
+        public Vector2 Predict(double targetTime, int steps = 1, float gain = 1.0f)
         {
             if (!IsReady || _points.Count < 2) return _points.LastOrDefault().Point;
 
-            // Optionally use the last predicted output along with raw points
-            var allPoints = new List<TimeSeriesPoint>(_points);
+            // Start with current points
+            var tempPoints = new List<TimeSeriesPoint>(_points);
             if (_usePredictedInput && _lastPredictedOutput.HasValue)
             {
-                allPoints.Add(_lastPredictedOutput.Value);
+                tempPoints.Add(_lastPredictedOutput.Value);
             }
             
-            var points = allPoints.ToArray();
-            var lastPoint = points.Last();
-            
-            Vector2 predictedPos;
+            // Calculate avgDt for time delta projection
+            double avgDt = 0;
+            if (tempPoints.Count >= 2)
+            {
+                for (int i = 0; i < tempPoints.Count - 1; i++) avgDt += (tempPoints[i + 1].Time - tempPoints[i].Time);
+                avgDt /= Math.Max(1, tempPoints.Count - 1);
+            }
+            if (avgDt <= 0) avgDt = 1;
 
-            List<Vector2> deltas = new List<Vector2>();
-            for (int i = 0; i < points.Length - 1; i++)
+            Vector2 lastRetPos = tempPoints.Last().Point;
+
+            for (int k = 0; k < steps; k++)
             {
-                deltas.Add(points[i+1].Point - points[i].Point);
-            }
-            
-            if (deltas.Count < 5) return lastPoint.Point;
-            
-            var inputDeltas = deltas.Skip(deltas.Count - 5).ToArray();
-            var inputPoints = points.Skip(points.Length - 5).ToArray();
-            
-            List<double> inputList = new List<double>();
-            
-            for(int i=0; i<5; i++)
-            {
-                inputList.Add(inputDeltas[i].X / 100.0);
-                inputList.Add(inputDeltas[i].Y / 100.0);
-            }
-            
-            if (_useAbsolutePosition)
-            {
+                var points = tempPoints.ToArray();
+                var lastPoint = points.Last();
+                
+                List<Vector2> deltas = new List<Vector2>();
+                for (int i = 0; i < points.Length - 1; i++)
+                {
+                    deltas.Add(points[i+1].Point - points[i].Point);
+                }
+                
+                if (deltas.Count < 5) 
+                {
+                    // If we have at least 1 delta, we can try to use it if the NN could handle it, 
+                    // but our NN is fixed at 5 deltas. So we must break.
+                    lastRetPos = lastPoint.Point;
+                    break;
+                }
+                
+                var inputDeltas = deltas.Skip(deltas.Count - 5).ToArray();
+                var inputPoints = points.Skip(points.Length - 5).ToArray();
+                
+                List<double> inputList = new List<double>();
                 for(int i=0; i<5; i++)
                 {
-                    inputList.Add(inputPoints[i].Point.X / 1000.0);
-                    inputList.Add(inputPoints[i].Point.Y / 1000.0);
+                    inputList.Add(inputDeltas[i].X / 10.0);
+                    inputList.Add(inputDeltas[i].Y / 10.0);
                 }
-            }
-            
-            if (_useTimeDelta)
-            {
-                for(int i=0; i<4; i++)
+                
+                if (_useAbsolutePosition)
                 {
-                    double timeDelta = inputPoints[i+1].Time - inputPoints[i].Time;
-                    inputList.Add(timeDelta / 10.0);
+                    for(int i=0; i<5; i++)
+                    {
+                        inputList.Add(inputPoints[i].Point.X / 1000.0);
+                        inputList.Add(inputPoints[i].Point.Y / 1000.0);
+                    }
                 }
-                double avgTimeDelta = 0;
-                for(int i=0; i<4; i++)
+                
+                if (_useTimeDelta)
                 {
-                    avgTimeDelta += (inputPoints[i+1].Time - inputPoints[i].Time);
+                    for(int i=0; i<4; i++)
+                    {
+                        double timeDelta = inputPoints[i+1].Time - inputPoints[i].Time;
+                        inputList.Add(timeDelta / 10.0);
+                    }
+                    double currentAvgDt = 0;
+                    for(int i=0; i<4; i++) currentAvgDt += (inputPoints[i+1].Time - inputPoints[i].Time);
+                    currentAvgDt /= 4.0;
+                    inputList.Add(currentAvgDt / 10.0);
                 }
-                avgTimeDelta /= 4.0;
-                inputList.Add(avgTimeDelta / 10.0);
+                
+                double[] nnInputs = inputList.ToArray();
+                var output = _nn.FeedForward(nnInputs);
+                
+                if (double.IsNaN(output[0]) || double.IsNaN(output[1]) || 
+                    double.IsInfinity(output[0]) || double.IsInfinity(output[1]))
+                {
+                    lastRetPos = lastPoint.Point;
+                    break;
+                }
+                
+                float predDeltaX = (float)(output[0] * 10.0) * gain;
+                float predDeltaY = (float)(output[1] * 10.0) * gain;
+                
+                lastRetPos = lastPoint.Point + new Vector2(predDeltaX, predDeltaY);
+                
+                // For the next step, push this predicted point into history
+                tempPoints.Add(new TimeSeriesPoint(lastRetPos, lastPoint.Time + avgDt));
+                // Keep only the last required points for the sliding window
+                int requiredPoints = 6; // 5 deltas = 6 points
+                if (_usePredictedInput) requiredPoints++;
+                if (tempPoints.Count > requiredPoints) tempPoints.RemoveAt(0);
             }
-            
-            double[] nnInputs = inputList.ToArray();
-            
-            var output = _nn.FeedForward(nnInputs);
-            
-            if (double.IsNaN(output[0]) || double.IsNaN(output[1]) || 
-                double.IsInfinity(output[0]) || double.IsInfinity(output[1]))
-            {
-                return lastPoint.Point;
-            }
-            
-            float predDeltaX = (float)(output[0] * 100.0);
-            float predDeltaY = (float)(output[1] * 100.0);
-            
-            predDeltaX *= lookahead;
-            predDeltaY *= lookahead;
-            
-            predictedPos = lastPoint.Point + new Vector2(predDeltaX, predDeltaY);
-            
-            double smoothedX = _filterX.Filter(predictedPos.X, targetTime);
-            double smoothedY = _filterY.Filter(predictedPos.Y, targetTime);
-            
-            return new Vector2((float)smoothedX, (float)smoothedY);
+
+            return lastRetPos;
         }
 
-        public Vector2[] PredictSequence(int count, float lookahead = 1.0f)
+        public Vector2[] PredictSequence(int count, int stepsPerPoint = 1, float gain = 1.0f)
         {
             if (!IsReady || _points.Count < 2) return Array.Empty<Vector2>();
 
-            // Start with raw points plus optionally the last predicted output
+            // Start with current points
             var tempPoints = new List<TimeSeriesPoint>(_points);
             if (_usePredictedInput && _lastPredictedOutput.HasValue)
             {
@@ -443,68 +458,73 @@ namespace AdaptiveFilter
 
             for (int k = 0; k < count; k++)
             {
-                var points = tempPoints.ToArray();
-                var lastPoint = points.Last();
-                List<Vector2> deltas = new List<Vector2>();
-                for (int i = 0; i < points.Length - 1; i++)
+                Vector2 currentPos = Vector2.Zero;
+                
+                // Step ahead multiple times for each visual point if requested
+                for (int s = 0; s < stepsPerPoint; s++)
                 {
-                    deltas.Add(points[i+1].Point - points[i].Point);
-                }
+                    var points = tempPoints.ToArray();
+                    var lastPoint = points.Last();
+                    List<Vector2> deltas = new List<Vector2>();
+                    for (int i = 0; i < points.Length - 1; i++)
+                    {
+                        deltas.Add(points[i+1].Point - points[i].Point);
+                    }
 
-                if (deltas.Count < 5)
-                {
-                    break;
-                }
+                    if (deltas.Count < 5) break;
 
-                var inputDeltas = deltas.Skip(deltas.Count - 5).ToArray();
-                var inputPoints = points.Skip(points.Length - 5).ToArray();
+                    var inputDeltas = deltas.Skip(deltas.Count - 5).ToArray();
+                    var inputPoints = points.Skip(points.Length - 5).ToArray();
 
-                List<double> inputList = new List<double>();
-                for(int i=0; i<5; i++)
-                {
-                    inputList.Add(inputDeltas[i].X / 100.0);
-                    inputList.Add(inputDeltas[i].Y / 100.0);
-                }
-                if (_useAbsolutePosition)
-                {
+                    List<double> inputList = new List<double>();
                     for(int i=0; i<5; i++)
                     {
-                        inputList.Add(inputPoints[i].Point.X / 1000.0);
-                        inputList.Add(inputPoints[i].Point.Y / 1000.0);
+                        inputList.Add(inputDeltas[i].X / 10.0);
+                        inputList.Add(inputDeltas[i].Y / 10.0);
                     }
-                }
-                if (_useTimeDelta)
-                {
-                    for(int i=0; i<4; i++)
+                    if (_useAbsolutePosition)
                     {
-                        double timeDelta = inputPoints[i+1].Time - inputPoints[i].Time;
-                        inputList.Add(timeDelta / 10.0);
+                        for(int i=0; i<5; i++)
+                        {
+                            inputList.Add(inputPoints[i].Point.X / 1000.0);
+                            inputList.Add(inputPoints[i].Point.Y / 1000.0);
+                        }
                     }
-                    double avgTimeDelta = 0;
-                    for(int i=0; i<4; i++) avgTimeDelta += (inputPoints[i+1].Time - inputPoints[i].Time);
-                    avgTimeDelta /= 4.0;
-                    inputList.Add(avgTimeDelta / 10.0);
+                    if (_useTimeDelta)
+                    {
+                        for(int i=0; i<4; i++)
+                        {
+                            double timeDelta = inputPoints[i+1].Time - inputPoints[i].Time;
+                            inputList.Add(timeDelta / 10.0);
+                        }
+                        double currentAvgDt = 0;
+                        for(int i=0; i<4; i++) currentAvgDt += (inputPoints[i+1].Time - inputPoints[i].Time);
+                        currentAvgDt /= 4.0;
+                        inputList.Add(currentAvgDt / 10.0);
+                    }
+
+                    double[] nnInputs = inputList.ToArray();
+                    var output = _nn.FeedForward(nnInputs);
+
+                    if (double.IsNaN(output[0]) || double.IsNaN(output[1]) ||
+                        double.IsInfinity(output[0]) || double.IsInfinity(output[1]))
+                    {
+                        break;
+                    }
+
+                    float predDeltaX = (float)(output[0] * 10.0) * gain;
+                    float predDeltaY = (float)(output[1] * 10.0) * gain;
+
+                    currentPos = lastPoint.Point + new Vector2(predDeltaX, predDeltaY);
+                    
+                    tempPoints.Add(new TimeSeriesPoint(currentPos, lastPoint.Time + avgDt));
+                    int requiredPoints = 6;
+                    if (_usePredictedInput) requiredPoints++;
+                    if (tempPoints.Count > requiredPoints) tempPoints.RemoveAt(0);
                 }
-
-                double[] nnInputs = inputList.ToArray();
-                var output = _nn.FeedForward(nnInputs);
-
-                if (double.IsNaN(output[0]) || double.IsNaN(output[1]) ||
-                    double.IsInfinity(output[0]) || double.IsInfinity(output[1]))
-                {
-                    break;
-                }
-
-                float predDeltaX = (float)(output[0] * 100.0);
-                float predDeltaY = (float)(output[1] * 100.0);
-                predDeltaX *= lookahead;
-                predDeltaY *= lookahead;
-
-                var nextPos = lastPoint.Point + new Vector2(predDeltaX, predDeltaY);
-                results.Add(nextPos);
-
-                tempPoints.Add(new TimeSeriesPoint(nextPos, lastPoint.Time + avgDt));
-                if (tempPoints.Count > _capacity) tempPoints.RemoveAt(0);
+                
+                if (currentPos == Vector2.Zero) break;
+                results.Add(currentPos);
             }
 
             return results.ToArray();
