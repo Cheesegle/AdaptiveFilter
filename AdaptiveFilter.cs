@@ -26,10 +26,11 @@ namespace AdaptiveFilter
         private Task? _upsampleTask;
         private IDeviceReport? _lastReport;
         private object _lock = new object();
-        private double _lastWebUpdate = 0;
         private double _lastConsumeTime = 0;
         private double _lastEmitTime = 0;
         private readonly AntiChatterFilter _antiChatter = new AntiChatterFilter();
+        private readonly LowPassFilter _preFilterX = new LowPassFilter();
+        private readonly LowPassFilter _preFilterY = new LowPassFilter();
 
         // Accuracy Stats
         private Vector2 _lastPredictedPosForAccuracy;
@@ -84,6 +85,12 @@ namespace AdaptiveFilter
 
         [Property("Anti-Chatter Strength"), Unit("mm"), DefaultPropertyValue(1.0f)]
         public float AntiChatterStrength { get => _antiChatter.Strength; set => _antiChatter.Strength = value; }
+
+        [Property("Use Pre-Smoothing"), DefaultPropertyValue(false)]
+        public bool UsePreSmoothing { get; set; } = false;
+
+        [Property("Smoothing Latency"), Unit("ms"), DefaultPropertyValue(2.0f)]
+        public float PreSmoothingLatency { get; set; } = 2.0f;
 
         [Property("Web UI Port"), DefaultPropertyValue(5000)]
         public int WebPort { get; set; } = 5000;
@@ -358,6 +365,19 @@ namespace AdaptiveFilter
                 {
                     _lastReport = report;
                     double now = _timer.Elapsed.TotalMilliseconds;
+                    double dt_consume = now - _lastConsumeTime;
+                    _lastConsumeTime = now;
+
+                    if (UsePreSmoothing)
+                    {
+                        double filterDt = (dt_consume <= 0 || dt_consume > 100) ? 1.0 : dt_consume;
+                        double alpha = filterDt / (filterDt + PreSmoothingLatency);
+                        
+                        var pos = report.Position;
+                        pos.X = (float)_preFilterX.Filter(pos.X, alpha);
+                        pos.Y = (float)_preFilterY.Filter(pos.Y, alpha);
+                        report.Position = pos;
+                    }
                     
                     // Calculate Velocity (mm/ms)
                     if (_lastVelocityTime > 0 && now > _lastVelocityTime)
@@ -373,8 +393,6 @@ namespace AdaptiveFilter
                     }
                     _lastVelocityPos = report.Position;
                     _lastVelocityTime = now;
-
-                    _lastConsumeTime = now;
                     
                     if (Math.Abs(now - _lastAccuracyCheckTime) < 10)
                     {
