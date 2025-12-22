@@ -27,8 +27,10 @@ namespace AdaptiveFilter
         private double _lastConsumeTime = 0;
         private double _lastEmitTime = 0;
         private readonly AntiChatterFilter _antiChatter = new AntiChatterFilter();
-        private readonly LowPassFilter _preFilterX = new LowPassFilter();
-        private readonly LowPassFilter _preFilterY = new LowPassFilter();
+        private readonly OneEuroFilter _preFilterX = new OneEuroFilter(1.0, 0.1);
+        private readonly OneEuroFilter _preFilterY = new OneEuroFilter(1.0, 0.1);
+        private readonly OneEuroFilter _postFilterX = new OneEuroFilter(1.0, 0.1);
+        private readonly OneEuroFilter _postFilterY = new OneEuroFilter(1.0, 0.1);
 
         // Accuracy Stats
         private Vector2 _lastPredictedPosForAccuracy;
@@ -69,8 +71,36 @@ namespace AdaptiveFilter
         [Property("Use Pre-Smoothing"), DefaultPropertyValue(false)]
         public bool UsePreSmoothing { get; set; } = false;
 
-        [Property("Smoothing Latency"), Unit("ms"), DefaultPropertyValue(2.0f)]
-        public float PreSmoothingLatency { get; set; } = 2.0f;
+        [Property("Pre-Smoothing Min Cutoff"), Unit("Hz"), DefaultPropertyValue(1.0f)]
+        public float PreSmoothingMinCutoff 
+        { 
+            get => (float)_preFilterX.MinCutoff; 
+            set { _preFilterX.MinCutoff = value; _preFilterY.MinCutoff = value; } 
+        }
+
+        [Property("Pre-Smoothing Beta"), DefaultPropertyValue(0.1f)]
+        public float PreSmoothingBeta 
+        { 
+            get => (float)_preFilterX.Beta; 
+            set { _preFilterX.Beta = value; _preFilterY.Beta = value; } 
+        }
+
+        [Property("Use Post-Smoothing"), DefaultPropertyValue(false)]
+        public bool UsePostSmoothing { get; set; } = false;
+
+        [Property("Post-Smoothing Min Cutoff"), Unit("Hz"), DefaultPropertyValue(1.0f)]
+        public float PostSmoothingMinCutoff 
+        { 
+            get => (float)_postFilterX.MinCutoff; 
+            set { _postFilterX.MinCutoff = value; _postFilterY.MinCutoff = value; } 
+        }
+
+        [Property("Post-Smoothing Beta"), DefaultPropertyValue(0.1f)]
+        public float PostSmoothingBeta 
+        { 
+            get => (float)_postFilterX.Beta; 
+            set { _postFilterX.Beta = value; _postFilterY.Beta = value; } 
+        }
 
         [Property("Web UI Port"), DefaultPropertyValue(5000)]
         public int WebPort { get; set; } = 5000;
@@ -116,11 +146,8 @@ namespace AdaptiveFilter
                     Vector2 smoothedPos = report.Position;
                     if (UsePreSmoothing)
                     {
-                        double filterDt = (dt_consume <= 0 || dt_consume > 100) ? 1.0 : dt_consume;
-                        double alpha = filterDt / (filterDt + PreSmoothingLatency);
-                        
-                        smoothedPos.X = (float)_preFilterX.Filter(smoothedPos.X, alpha);
-                        smoothedPos.Y = (float)_preFilterY.Filter(smoothedPos.Y, alpha);
+                        smoothedPos.X = (float)_preFilterX.Filter(smoothedPos.X, now);
+                        smoothedPos.Y = (float)_preFilterY.Filter(smoothedPos.Y, now);
                     }
                     
                     var filteredPos = _antiChatter.Filter(smoothedPos);
@@ -140,6 +167,12 @@ namespace AdaptiveFilter
                         if (!float.IsNaN(predictedPos.X) && !float.IsNaN(predictedPos.Y) &&
                             !float.IsInfinity(predictedPos.X) && !float.IsInfinity(predictedPos.Y))
                         {
+                            if (UsePostSmoothing)
+                            {
+                                predictedPos.X = (float)_postFilterX.Filter(predictedPos.X, now);
+                                predictedPos.Y = (float)_postFilterY.Filter(predictedPos.Y, now);
+                            }
+
                             report.Position = predictedPos;
                             
                             if (BypassOTD)

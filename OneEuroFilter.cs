@@ -4,6 +4,9 @@ namespace AdaptiveFilter
 {
     public class OneEuroFilter
     {
+        public double MinCutoff { get => _minCutoff; set => _minCutoff = value; }
+        public double Beta { get => _beta; set => _beta = value; }
+
         private double _minCutoff;
         private double _beta;
         private double _dCutoff;
