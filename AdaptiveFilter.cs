@@ -58,6 +58,9 @@ namespace AdaptiveFilter
         [Property("Use Interpolated Training"), DefaultPropertyValue(false)]
         public bool UseInterpolatedTraining { get => _core.UseInterpolatedTraining; set => _core.UseInterpolatedTraining = value; }
 
+        [Property("Use Future-Input Training"), DefaultPropertyValue(false)]
+        public bool UseFutureTraining { get => _core.UseFutureTraining; set => _core.UseFutureTraining = value; }
+
         [Property("Samples"), DefaultPropertyValue(10)]
         public int Samples 
         { 

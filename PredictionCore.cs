@@ -96,6 +96,21 @@ namespace AdaptiveFilter
             set => _usePredictedInput = value;
         }
 
+        private bool _useFutureTraining = false;
+        public bool UseFutureTraining
+        {
+            get => _useFutureTraining;
+            set => _useFutureTraining = value;
+        }
+
+        private struct PendingPrediction
+        {
+            public double[] Inputs;
+            public double TargetTime;
+            public Vector2 PreviousPoint;
+        }
+        private readonly List<PendingPrediction> _pendingPredictions = new List<PendingPrediction>();
+
         public PredictionCore(int capacity = 10)
         {
             _capacity = capacity;
@@ -127,6 +142,8 @@ namespace AdaptiveFilter
 
         public void Add(Vector2 point, double time)
         {
+            TimeSeriesPoint? lastRealPoint = _points.Count > 0 ? _points.Last() : (TimeSeriesPoint?)null;
+
             if (_points.Count >= _capacity)
             {
                 _points.Dequeue();
@@ -138,6 +155,47 @@ namespace AdaptiveFilter
 
             if (IsReady)
             {
+                // Future-input training: learn from past predictions that have now been "reached"
+                if (_useFutureTraining && lastRealPoint.HasValue)
+                {
+                    lock (_pendingPredictions)
+                    {
+                        for (int i = _pendingPredictions.Count - 1; i >= 0; i--)
+                        {
+                            var pending = _pendingPredictions[i];
+                            // If the target time of our past prediction is now in the past compared to our new real data
+                            if (pending.TargetTime <= time && pending.TargetTime > lastRealPoint.Value.Time)
+                            {
+                                // Interpolate actual position at the predicted time
+                                float t = (float)((pending.TargetTime - lastRealPoint.Value.Time) / (time - lastRealPoint.Value.Time));
+                                Vector2 actualPos = Vector2.Lerp(lastRealPoint.Value.Point, point, t);
+                                Vector2 actualDelta = actualPos - pending.PreviousPoint;
+
+                                double[] targets = new double[2];
+                                targets[0] = actualDelta.X / 10.0;
+                                targets[1] = actualDelta.Y / 10.0;
+
+                                _nn.BackPropagate(pending.Inputs, targets, LearningRate);
+                                TrainingIterations++;
+                                
+                                // Record reinforcement point for visualization
+                                lock (_reinforcementPoints)
+                                {
+                                    _reinforcementPoints.Enqueue(actualPos);
+                                    while (_reinforcementPoints.Count > MaxReinforcementPoints) _reinforcementPoints.TryDequeue(out _);
+                                }
+
+                                _pendingPredictions.RemoveAt(i);
+                            }
+                            else if (pending.TargetTime <= lastRealPoint.Value.Time)
+                            {
+                                // Too old, remove
+                                _pendingPredictions.RemoveAt(i);
+                            }
+                        }
+                    }
+                }
+
                 Train();
             }
         }
@@ -423,6 +481,23 @@ namespace AdaptiveFilter
                 float predDeltaX = (float)(output[0] * 10.0) * gain;
                 float predDeltaY = (float)(output[1] * 10.0) * gain;
                 
+                // Capture prediction for future training
+                if (_useFutureTraining)
+                {
+                    lock (_pendingPredictions)
+                    {
+                        _pendingPredictions.Add(new PendingPrediction
+                        {
+                            Inputs = nnInputs,
+                            TargetTime = lastPoint.Time + avgDt,
+                            PreviousPoint = lastPoint.Point
+                        });
+                        
+                        // Limit buffer size
+                        if (_pendingPredictions.Count > 100) _pendingPredictions.RemoveAt(0);
+                    }
+                }
+
                 lastRetPos = lastPoint.Point + new Vector2(predDeltaX, predDeltaY);
                 
                 // For the next step, push this predicted point into history
