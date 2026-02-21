@@ -103,6 +103,26 @@ namespace AdaptiveFilter
             set => _useFutureTraining = value;
         }
 
+        private bool _usePressureInput = false;
+        public bool UsePressureInput
+        {
+            get => _usePressureInput;
+            set
+            {
+                if (_usePressureInput != value) { _usePressureInput = value; RebuildNetwork(); }
+            }
+        }
+
+        private bool _useHoverDistance = false;
+        public bool UseHoverDistance
+        {
+            get => _useHoverDistance;
+            set
+            {
+                if (_useHoverDistance != value) { _useHoverDistance = value; RebuildNetwork(); }
+            }
+        }
+
         private struct PendingPrediction
         {
             public double[] Inputs;
@@ -124,9 +144,11 @@ namespace AdaptiveFilter
 
         private void RebuildNetwork()
         {
-            int inputSize = 10; // Base deltas
-            if (_useAbsolutePosition) inputSize += 10; // Absolute X,Y positions
-            if (_useTimeDelta) inputSize += 5; // Time differences
+            int inputSize = 10; // Base: 5 deltas * XY
+            if (_useAbsolutePosition) inputSize += 10;
+            if (_useTimeDelta) inputSize += 5;
+            if (_usePressureInput) inputSize += 5; // pressure per point in window
+            if (_useHoverDistance) inputSize += 5; // hover per point in window
 
             int[] layers = new int[_hiddenCount + 2];
             layers[0] = inputSize;
@@ -140,7 +162,7 @@ namespace AdaptiveFilter
             TrainingIterations = 0; 
         }
 
-        public void Add(Vector2 point, double time)
+        public void Add(Vector2 point, double time, float pressure = 0f, float hover = 0f)
         {
             TimeSeriesPoint? lastRealPoint = _points.Count > 0 ? _points.Last() : (TimeSeriesPoint?)null;
 
@@ -148,7 +170,7 @@ namespace AdaptiveFilter
             {
                 _points.Dequeue();
             }
-            _points.Enqueue(new TimeSeriesPoint(point, time));
+            _points.Enqueue(new TimeSeriesPoint(point, time, pressure, hover));
             
             // Clear last predicted output since we have a new raw input
             _lastPredictedOutput = null;
@@ -287,7 +309,9 @@ namespace AdaptiveFilter
             float t = (float)fraction;
 
             Vector2 interpPoint = Vector2.Lerp(p1.Point, p2.Point, t);
-            var interpolatedPoint = new TimeSeriesPoint(interpPoint, targetTime);
+            float interpPressure = p1.Pressure + (p2.Pressure - p1.Pressure) * t;
+            float interpHover = p1.Hover + (p2.Hover - p1.Hover) * t;
+            var interpolatedPoint = new TimeSeriesPoint(interpPoint, targetTime, interpPressure, interpHover);
 
             var newPoints = new TimeSeriesPoint[6];
             var newDeltas = new Vector2[6];
@@ -358,6 +382,18 @@ namespace AdaptiveFilter
                     double timeDelta = trainingPoints[i+1].Time - trainingPoints[i].Time;
                     inputList.Add(timeDelta / 10.0);
                 }
+            }
+            
+            if (_usePressureInput)
+            {
+                for(int i=0; i<5; i++)
+                    inputList.Add(trainingPoints[i].Pressure);
+            }
+            
+            if (_useHoverDistance)
+            {
+                for(int i=0; i<5; i++)
+                    inputList.Add(trainingPoints[i].Hover);
             }
             
             double[] nnInputs = inputList.ToArray();
@@ -466,6 +502,18 @@ namespace AdaptiveFilter
                     for(int i=0; i<4; i++) currentAvgDt += (inputPoints[i+1].Time - inputPoints[i].Time);
                     currentAvgDt /= 4.0;
                     inputList.Add(currentAvgDt / 10.0);
+                }
+                
+                if (_usePressureInput)
+                {
+                    for(int i=0; i<5; i++)
+                        inputList.Add(inputPoints[i].Pressure);
+                }
+                
+                if (_useHoverDistance)
+                {
+                    for(int i=0; i<5; i++)
+                        inputList.Add(inputPoints[i].Hover);
                 }
                 
                 double[] nnInputs = inputList.ToArray();
@@ -577,6 +625,18 @@ namespace AdaptiveFilter
                         currentAvgDt /= 4.0;
                         inputList.Add(currentAvgDt / 10.0);
                     }
+                    
+                    if (_usePressureInput)
+                    {
+                        for(int i=0; i<5; i++)
+                            inputList.Add(inputPoints[i].Pressure);
+                    }
+                    
+                    if (_useHoverDistance)
+                    {
+                        for(int i=0; i<5; i++)
+                            inputList.Add(inputPoints[i].Hover);
+                    }
 
                     double[] nnInputs = inputList.ToArray();
                     var output = _nn.FeedForward(nnInputs);
@@ -614,11 +674,15 @@ namespace AdaptiveFilter
         {
             public Vector2 Point;
             public double Time;
+            public float Pressure;
+            public float Hover;
 
-            public TimeSeriesPoint(Vector2 point, double time)
+            public TimeSeriesPoint(Vector2 point, double time, float pressure = 0f, float hover = 0f)
             {
                 Point = point;
                 Time = time;
+                Pressure = pressure;
+                Hover = hover;
             }
         }
     }

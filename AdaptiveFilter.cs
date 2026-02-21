@@ -32,6 +32,18 @@ namespace AdaptiveFilter
         private readonly OneEuroFilter _postFilterX = new OneEuroFilter(1.0, 0.1);
         private readonly OneEuroFilter _postFilterY = new OneEuroFilter(1.0, 0.1);
 
+        // Upsampling
+        private bool _useUpsampling = false;
+        private float _upsampleHz = 1000f;
+        private Thread? _upsampleThread;
+        private CancellationTokenSource? _upsampleCts;
+        private int _upsampleEmitCount = 0;
+        private double _upsampleRateWindow = 0;
+        private float _measuredUpsampleRate = 0;
+        // Pen-lift detection: if no tablet report arrives for this many ms
+        // the pen is assumed to have left proximity (works for all input types).
+        private const double PenLiftTimeoutMs = 50.0;
+
         // Accuracy Stats
         private Vector2 _lastPredictedPosForAccuracy;
         private double _lastAccuracyCheckTime;
@@ -111,6 +123,43 @@ namespace AdaptiveFilter
         [Property("Bypass OTD Output"), DefaultPropertyValue(false)]
         public bool BypassOTD { get; set; } = false;
 
+        [Property("Use Pressure Input"), DefaultPropertyValue(false)]
+        public bool UsePressureInput { get => _core.UsePressureInput; set => _core.UsePressureInput = value; }
+
+        [Property("Use Hover Distance Input"), DefaultPropertyValue(false)]
+        public bool UseHoverDistance { get => _core.UseHoverDistance; set => _core.UseHoverDistance = value; }
+
+        [Property("Use Upsampling"), DefaultPropertyValue(false)]
+        public bool UseUpsampling
+        {
+            get => _useUpsampling;
+            set
+            {
+                if (_useUpsampling != value)
+                {
+                    _useUpsampling = value;
+                    if (value) StartUpsampleThread();
+                    else StopUpsampleThread();
+                }
+            }
+        }
+
+        [Property("Upsample Hz"), Unit("Hz"), DefaultPropertyValue(1000f)]
+        public float UpsampleHz
+        {
+            get => _upsampleHz;
+            set
+            {
+                _upsampleHz = Math.Max(1f, value);
+                // Restart the thread so it picks up the new interval
+                if (_useUpsampling)
+                {
+                    StopUpsampleThread();
+                    StartUpsampleThread();
+                }
+            }
+        }
+
         public AdaptiveFilter()
         {
             _timer.Start();
@@ -127,6 +176,99 @@ namespace AdaptiveFilter
             catch (Exception ex)
             {
                 Log.Write("AdaptiveFilter", $"Failed to start Web UI: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        private void StartUpsampleThread()
+        {
+            _upsampleCts = new CancellationTokenSource();
+            _upsampleThread = new Thread(UpsampleLoop)
+            {
+                IsBackground = true,
+                Name = "AdaptiveFilter-Upsample",
+                Priority = ThreadPriority.AboveNormal
+            };
+            _upsampleThread.Start();
+        }
+
+        private void StopUpsampleThread()
+        {
+            _upsampleCts?.Cancel();
+            _upsampleThread?.Join(500);
+            _upsampleThread = null;
+            _upsampleCts = null;
+        }
+
+        private void UpsampleLoop()
+        {
+            var token = _upsampleCts!.Token;
+            var sw = Stopwatch.StartNew();
+            double intervalMs = 1000.0 / _upsampleHz;
+            double nextTickMs = sw.Elapsed.TotalMilliseconds + intervalMs;
+
+            while (!token.IsCancellationRequested)
+            {
+                // Busy-spin with a small sleep to approach target Hz
+                double remaining = nextTickMs - sw.Elapsed.TotalMilliseconds;
+                if (remaining > 1.5)
+                    Thread.Sleep(1);
+                else
+                {
+                    while (sw.Elapsed.TotalMilliseconds < nextTickMs)
+                        Thread.SpinWait(10);
+                }
+
+                if (token.IsCancellationRequested) break;
+
+                nextTickMs += intervalMs;
+
+                lock (_lock)
+                {
+                    if (_lastReport == null || !_core.IsReady) continue;
+
+                    // If no real report has arrived recently, the pen left proximity — stop emitting
+                    double idleMs = _timer.Elapsed.TotalMilliseconds - _lastConsumeTime;
+                    if (idleMs > PenLiftTimeoutMs) continue;
+
+                    double now = _timer.Elapsed.TotalMilliseconds;
+                    var predictedPos = _core.Predict(now, PredictionSteps, PredictionGain);
+
+                    if (float.IsNaN(predictedPos.X) || float.IsNaN(predictedPos.Y) ||
+                        float.IsInfinity(predictedPos.X) || float.IsInfinity(predictedPos.Y))
+                        continue;
+
+                    if (UsePostSmoothing)
+                    {
+                        predictedPos.X = (float)_postFilterX.Filter(predictedPos.X, now);
+                        predictedPos.Y = (float)_postFilterY.Filter(predictedPos.Y, now);
+                    }
+
+                    // Safely emit with predicted position without corrupting _lastReport for Consume()
+                    if (_lastReport is ITabletReport tabletReport)
+                    {
+                        // Mutate, emit, restore — safe because we hold _lock
+                        var origPos = tabletReport.Position;
+                        tabletReport.Position = predictedPos;
+
+                        if (BypassOTD)
+                            InputInjector.MoveMouse(predictedPos);
+                        else
+                            Emit?.Invoke(tabletReport);
+
+                        tabletReport.Position = origPos; // restore
+
+                        _lastEmitTime = now;
+
+                        // Track upsample rate
+                        _upsampleEmitCount++;
+                        if (now - _upsampleRateWindow >= 1000.0)
+                        {
+                            _measuredUpsampleRate = (float)(_upsampleEmitCount * 1000.0 / Math.Max(1, now - _upsampleRateWindow));
+                            _upsampleEmitCount = 0;
+                            _upsampleRateWindow = now;
+                        }
+                    }
+                }
             }
         }
 
@@ -160,11 +302,16 @@ namespace AdaptiveFilter
                         _currentAccuracy = Vector2.Distance(report.Position, _lastPredictedPosForAccuracy);
                     }
                     
-                    _core.Add(filteredPos, now);
+                    // Extract pressure (normalized 0-1) and hover distance
+                    float pressure = report.Pressure / 32767f;
+                    float hover = 0f; // OTD has no standard hover-distance interface;
+                                      // extend here if your driver exposes one
+
+                    _core.Add(filteredPos, now, pressure, hover);
                     
-                    if (_core.IsReady)
+                    if (_core.IsReady && !_useUpsampling)
                     {
-                        // 1:1 Prediction Mode
+                        // 1:1 Prediction Mode (only when upsampling is off)
                         var predictedPos = _core.Predict(now, PredictionSteps, PredictionGain);
                         
                         if (!float.IsNaN(predictedPos.X) && !float.IsNaN(predictedPos.Y) &&
@@ -192,16 +339,29 @@ namespace AdaptiveFilter
                             _lastAccuracyCheckTime = now;
                         }
                     }
+                    else if (!_core.IsReady && _useUpsampling)
+                    {
+                        // NN not ready yet — pass raw input through while upsampling
+                        if (BypassOTD)
+                            InputInjector.MoveMouse(report.Position);
+                        else
+                            Emit?.Invoke(report);
+                    }
+                    // When upsampling is on and core is ready, the upsample thread handles emit.
                     
+                    float displayRate = _useUpsampling ? _measuredUpsampleRate : 
+                        (_lastEmitTime > 0 ? (float)(1000.0 / Math.Max(1, now - _lastEmitTime + 1)) : 0);
+
                     if (now - _lastRawWebUpdate > 16)
                     {
-                        _webInterface?.BroadcastData(filteredPos, now, false, _currentAccuracy);
+                        _webInterface?.BroadcastData(filteredPos, now, false, _currentAccuracy, 
+                            rate: displayRate);
                         _lastRawWebUpdate = now;
                     }
                 }
             }
             
-            if (!_core.IsReady)
+            if (!_core.IsReady && !_useUpsampling)
             {
                 if (BypassOTD && value is ITabletReport tr)
                 {
@@ -216,6 +376,7 @@ namespace AdaptiveFilter
 
         public void Dispose()
         {
+            StopUpsampleThread();
             _webInterface?.Dispose();
             _timer.Stop();
         }
