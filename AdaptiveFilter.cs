@@ -129,6 +129,9 @@ namespace AdaptiveFilter
         [Property("Use Hover Distance Input"), DefaultPropertyValue(false)]
         public bool UseHoverDistance { get => _core.UseHoverDistance; set => _core.UseHoverDistance = value; }
 
+        [Property("Pressure History Size"), DefaultPropertyValue(5)]
+        public int PressureHistorySize { get => _core.PressureHistorySize; set => _core.PressureHistorySize = value; }
+
         [Property("Use Upsampling"), DefaultPropertyValue(false)]
         public bool UseUpsampling
         {

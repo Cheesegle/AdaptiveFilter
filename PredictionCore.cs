@@ -123,6 +123,17 @@ namespace AdaptiveFilter
             }
         }
 
+        private int _pressureHistorySize = 5;
+        public int PressureHistorySize
+        {
+            get => _pressureHistorySize;
+            set
+            {
+                int clamped = Math.Clamp(value, 1, 5);
+                if (_pressureHistorySize != clamped) { _pressureHistorySize = clamped; RebuildNetwork(); }
+            }
+        }
+
         private struct PendingPrediction
         {
             public double[] Inputs;
@@ -147,8 +158,8 @@ namespace AdaptiveFilter
             int inputSize = 10; // Base: 5 deltas * XY
             if (_useAbsolutePosition) inputSize += 10;
             if (_useTimeDelta) inputSize += 5;
-            if (_usePressureInput) inputSize += 5; // pressure per point in window
-            if (_useHoverDistance) inputSize += 5; // hover per point in window
+            if (_usePressureInput) inputSize += _pressureHistorySize;
+            if (_useHoverDistance) inputSize += _pressureHistorySize; // same window size
 
             int[] layers = new int[_hiddenCount + 2];
             layers[0] = inputSize;
@@ -386,13 +397,15 @@ namespace AdaptiveFilter
             
             if (_usePressureInput)
             {
-                for(int i=0; i<5; i++)
+                int skip = 5 - _pressureHistorySize;
+                for(int i=skip; i<5; i++)
                     inputList.Add(trainingPoints[i].Pressure);
             }
             
             if (_useHoverDistance)
             {
-                for(int i=0; i<5; i++)
+                int skip = 5 - _pressureHistorySize;
+                for(int i=skip; i<5; i++)
                     inputList.Add(trainingPoints[i].Hover);
             }
             
@@ -506,13 +519,15 @@ namespace AdaptiveFilter
                 
                 if (_usePressureInput)
                 {
-                    for(int i=0; i<5; i++)
+                    int skip = 5 - _pressureHistorySize;
+                    for(int i=skip; i<5; i++)
                         inputList.Add(inputPoints[i].Pressure);
                 }
                 
                 if (_useHoverDistance)
                 {
-                    for(int i=0; i<5; i++)
+                    int skip = 5 - _pressureHistorySize;
+                    for(int i=skip; i<5; i++)
                         inputList.Add(inputPoints[i].Hover);
                 }
                 
@@ -628,13 +643,15 @@ namespace AdaptiveFilter
                     
                     if (_usePressureInput)
                     {
-                        for(int i=0; i<5; i++)
+                        int skip = 5 - _pressureHistorySize;
+                        for(int i=skip; i<5; i++)
                             inputList.Add(inputPoints[i].Pressure);
                     }
                     
                     if (_useHoverDistance)
                     {
-                        for(int i=0; i<5; i++)
+                        int skip = 5 - _pressureHistorySize;
+                        for(int i=skip; i<5; i++)
                             inputList.Add(inputPoints[i].Hover);
                     }
 
