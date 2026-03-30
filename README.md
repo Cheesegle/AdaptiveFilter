@@ -3,7 +3,7 @@
 A real-time adaptive Neural Network filter plugin for OpenTabletDriver that learns your movement patterns to provide smooth, low-latency cursor prediction.
 
 > [!IMPORTANT]
-> **Please read the [Disclaimer & Fair Play Notice](DISCLAIMER.md) before using this plugin.**
+> **This filter is NOT allowed on Akatsuki servers. Using it will result in a restriction.**
 
 **⚠️Note:** This project was vibe coded using AI assistance. The entire codebase, from the neural network implementation to the real-time web visualization, was developed through AI programming.
 
